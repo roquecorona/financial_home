@@ -41,7 +41,7 @@ F.pages.spending = async (root, r, ctl) => {
       <section class="panel span-12 ${p.category ? '' : 'hidden'}" id="cat-detail"></section>
       <section class="panel span-6"><div class="panel-head"><h2>Top merchants</h2><span class="sub">Tap one to see its transactions</span></div>
         <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Merchant</th><th class="hide-sm">Category</th><th class="num">Visits</th><th class="num">Total</th></tr></thead>
-        <tbody>${d.merchants.slice(0, 15).map((m) => html`<tr class="clickable" data-merchant="${m.merchant}" tabindex="0"><td><b>${m.merchant}</b><div class="tiny muted">Last ${fmt.date(m.last)}</div></td>
+        <tbody>${d.merchants.slice(0, window.matchMedia('(max-width: 760px)').matches ? 8 : 15).map((m) => html`<tr class="clickable" data-merchant="${m.merchant}" tabindex="0"><td><b>${m.merchant}</b><div class="tiny muted">Last ${fmt.date(m.last)}</div></td>
           <td class="hide-sm"><span class="row" style="gap:6px"><i class="dot" style="background:${raw(F.catVar(m.category))}"></i>${m.category}</span></td><td class="num" data-label="Visits">${m.n}</td><td class="num key">${fmt.amt(m.total, { cents: false })}</td></tr>`)}</tbody></table></div>
         ${d.merchants.length ? '' : F.empty('No spending in this range')}</div></section>
       <section class="panel span-3"><div class="panel-head"><h2>By card holder</h2></div><div class="panel-body flush">${F.hbars(d.by_holder.map((x) => ({ label: x.name, value: x.total, key: x.name })), { onClick: true, active: p.holder, valueFmt: (v) => fmt.amt(v, { cents: false }) })}</div></section>
@@ -112,7 +112,7 @@ F.pages.spending = async (root, r, ctl) => {
   const table = F.txnTable($('#spend-txns', root), {
     base: { holder: p.holder, entity: p.entity, account: p.account }, noPreset: true,
     state: { preset: 'custom', start: d.start, end: d.end, category: p.category, merchant: p.merchant, q: p.q || '', kind: p.kind || 'spending', subcategory: '' },
-    title: 'Transactions', onEdit: F.debounce(() => {}, 10),
+    title: 'Transactions', onEdit: F.debounce(() => {}, 10), pageSize: window.matchMedia('(max-width: 760px)').matches ? 40 : 100,
   });
 
   const draw = () => {

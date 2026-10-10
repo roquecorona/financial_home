@@ -59,6 +59,9 @@
     const d = await F.get('/api/properties', { year });
     if (!ctl.alive()) return;
     const b = d.business;
+    const unRow = (t) => html`<div class="list-item"><div class="main-col"><button type="button" class="title linkish" data-txn="${t.txn_id}">${t.merchant_name}</button><div class="meta">${fmt.date(t.posted_date)} · ${t.category || ''}${t.subcategory ? ' · ' + t.subcategory : ''}</div></div>
+            <select class="input sm assign" data-assign="${t.txn_id}" aria-label="Assign ${t.merchant_name} to a property"><option value="">Assign to…</option>${d.properties.map((p) => html`<option value="${p.entity || p.name}">${p.name}</option>`)}</select>
+            <span class="amount">${F.amtCell(t.amount)}</span></div>`;
     F.setHTML(root, html`
       ${F.head({ title: 'Properties', lede: 'Rentals and our home. Jenny’s sheet covers the months it has; bank transactions tagged to a property fill in the rest, plus anything entered here.',
         actions: html`<select class="input sm" data-year style="width:auto" aria-label="Year">${d.years.map((y) => html`<option ${y === year ? raw('selected') : ''}>${y}</option>`)}</select><button type="button" class="btn primary" data-add>${icon('plus')}Add property</button>` })}
@@ -82,9 +85,7 @@
               <div><dt>Equity</dt><dd>${pr.equity !== null && pr.equity !== undefined ? fmt.amt(pr.equity, { cents: false }) : '—'}</dd></div>
             </dl></div></a>`)}
         <section class="span-12"><div class="panel-head"><h2>Rental business transactions without a property</h2><span class="sub">${year} · assign each to a property so it lands in that property’s numbers</span></div>
-          <div class="panel-body flush"><div class="list">${d.unassigned.slice(0, 40).map((t) => html`<div class="list-item"><div class="main-col"><button type="button" class="title linkish" data-txn="${t.txn_id}">${t.merchant_name}</button><div class="meta">${fmt.date(t.posted_date)} · ${t.category || ''}${t.subcategory ? ' · ' + t.subcategory : ''}</div></div>
-            <select class="input sm assign" data-assign="${t.txn_id}" aria-label="Assign to property"><option value="">Assign to…</option>${d.properties.map((p) => html`<option value="${p.entity || p.name}">${p.name}</option>`)}</select>
-            <span class="amount">${F.amtCell(t.amount)}</span></div>`)}</div>
+          <div class="panel-body flush">${[d.unassigned.slice(0, 6), d.unassigned.slice(6, 40)].map((part, i) => (!part.length ? '' : i === 0 ? html`<div class="list">${part.map(unRow)}</div>` : html`<details class="disclosure"><summary>${part.length} more <span class="badge">${Math.min(d.unassigned.length, 40)} in all</span></summary><div class="list">${part.map(unRow)}</div></details>`))}
           ${d.unassigned.length ? '' : F.empty('Everything is assigned')}</div></section>
       </div>`);
     $('[data-year]', root).onchange = (e) => F.go(`#/properties?year=${e.target.value}`);
