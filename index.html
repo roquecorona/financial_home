@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FFFFFF">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Financial Home">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="format-detection" content="telephone=no">
+<title>Financial Home</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="static/apple-touch-icon.png">
+<link rel="preload" href="static/fonts/space-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="static/fonts/archivo-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="static/app.css">
+<link rel="stylesheet" href="static/login.css">
+</head>
+<body>
+<div id="app" aria-live="polite"></div>
+<noscript>This app needs JavaScript turned on.</noscript>
+<!-- vendor -->
+<script src="vendor/chart.umd.4.4.9.min.js"></script>
+<script src="vendor/sql-wasm.js"></script>
+<script src="vendor/supabase.umd.js"></script>
+<!-- data layer -->
+<script src="js/data/supabase-config.js"></script>
+<script src="js/data/schema.js"></script>
+<script src="js/data/db.js"></script>
+<script src="js/data/auth.js"></script>
+<!-- API (ported from app.py) -->
+<script src="js/api/router.js"></script>
+<script src="js/api/helpers.js"></script>
+<script src="js/api/misc.js"></script>
+<script src="js/api/home.js"></script>
+<script src="js/api/spending.js"></script>
+<script src="js/api/cards.js"></script>
+<script src="js/api/invest.js"></script>
+<!-- UI -->
+<script src="static/js/core.js"></script>
+<script src="static/js/charts.js"></script>
+<script src="static/js/components.js"></script>
+<script src="static/js/forecast.js"></script>
+<script src="static/js/pages/home.js"></script>
+<script src="static/js/pages/accounts.js"></script>
+<script src="static/js/pages/cards.js"></script>
+<script src="static/js/pages/bills.js"></script>
+<script src="static/js/pages/spending.js"></script>
+<script src="static/js/pages/orders.js"></script>
+<script src="static/js/pages/investments.js"></script>
+<script src="static/js/pages/properties.js"></script>
+<script src="static/js/pages/notes.js"></script>
+<script src="static/js/pages/manual.js"></script>
+<script src="static/js/pages/settings.js"></script>
+<script src="static/js/main.js"></script>
+</body>
+</html>

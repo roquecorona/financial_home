@@ -1,0 +1,34 @@
+# NEVER commit financial data. The data lives in Supabase (schema finance) behind auth + RLS.
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.ofx
+*.qfx
+/data/
+*.data.json
+*_data.json
+*-data.json
+snapshot*.json
+fake_orders.json
+app_v3_work/
+__dev__/
+
+# screenshots (they show real balances)
+screenshots/
+shots/
+*.png
+!static/*.png
+
+# local/tooling
+node_modules/
+__pycache__/
+*.pyc
+.env
+.env.*
+.DS_Store
+Thumbs.db

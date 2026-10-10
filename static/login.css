@@ -1,0 +1,60 @@
+/* Financial Home — login / loading / not-authorized screens. Swiss Precision: white, ink #111, accent #00875A,
+   no radii, no shadows, uppercase small labels. Scoped to .fh-login so it never touches app.css. */
+.fh-login {
+  --fh-ink: #111111;
+  --fh-muted: #5f6368;
+  --fh-rule: #111111;
+  --fh-hair: #d9d9d9;
+  --fh-accent: #00875A;
+  --fh-error: #B42318;
+  min-height: 100vh; min-height: 100dvh;
+  display: flex; align-items: center; justify-content: center;
+  padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  background: #FFFFFF; color: var(--fh-ink);
+  font-family: 'Archivo', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  color-scheme: light;
+  box-sizing: border-box;
+}
+.fh-login *, .fh-login *::before, .fh-login *::after { box-sizing: border-box; border-radius: 0; box-shadow: none; }
+.fh-login__panel { width: 100%; max-width: 400px; border-top: 4px solid var(--fh-ink); padding-top: 28px; }
+.fh-login__head { display: flex; align-items: center; gap: 14px; margin-bottom: 40px; color: var(--fh-ink); }
+.fh-login__kicker, .fh-login__label {
+  display: block; font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fh-muted);
+}
+.fh-login__title { font-family: 'Space Grotesk', 'Archivo', sans-serif; margin: 2px 0 0; font-size: 28px; line-height: 1.1; font-weight: 700; letter-spacing: -.02em; color: var(--fh-ink); }
+.fh-login__form { display: flex; flex-direction: column; }
+.fh-login__label { margin: 0 0 6px; }
+.fh-login__input {
+  width: 100%; height: 48px; padding: 0 12px; margin: 0 0 20px;
+  font: inherit; font-size: 16px; color: var(--fh-ink); background: #FFFFFF;
+  border: 1px solid var(--fh-ink); outline: none; -webkit-appearance: none; appearance: none;
+}
+.fh-login__input:focus { border-color: var(--fh-accent); box-shadow: inset 0 0 0 1px var(--fh-accent); }
+.fh-login__btn {
+  height: 48px; padding: 0 16px; width: 100%;
+  font: inherit; font-size: 13px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--fh-ink); background: #FFFFFF; border: 1px solid var(--fh-ink); cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+}
+.fh-login__btn:hover { background: #f4f4f4; }
+.fh-login__btn:focus-visible { outline: 2px solid var(--fh-accent); outline-offset: 2px; }
+.fh-login__btn--primary { background: var(--fh-accent); border-color: var(--fh-accent); color: #FFFFFF; }
+.fh-login__btn--primary:hover { background: #00704B; }
+.fh-login__btn:disabled { opacity: .5; cursor: default; }
+.fh-login__btn + .fh-login__btn { margin-top: 12px; }
+.fh-login__rule { display: flex; align-items: center; gap: 12px; margin: 20px 0;
+  font-size: 11px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fh-muted); }
+.fh-login__rule::before, .fh-login__rule::after { content: ''; flex: 1; height: 1px; background: var(--fh-hair); }
+.fh-login__msg { min-height: 1.4em; margin: 16px 0 0; font-size: 14px; line-height: 1.4; color: var(--fh-muted); }
+.fh-login__msg[data-kind="error"] { color: var(--fh-error); }
+.fh-login__msg[data-kind="ok"] { color: var(--fh-accent); }
+.fh-login__value { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+.fh-login__foot { margin-top: 48px; padding-top: 12px; border-top: 1px solid var(--fh-hair); font-size: 12px; color: var(--fh-muted); }
+.fh-progress { height: 4px; background: var(--fh-hair); margin-top: 8px; overflow: hidden; }
+.fh-progress i { display: block; height: 100%; width: 0; background: var(--fh-accent); transition: width .2s linear; }
+@media (prefers-reduced-motion: reduce) { .fh-progress i { transition: none; } }
+
+/* "Refresh data" control injected into the app shell (core.js). */
+.fh-refresh[aria-busy="true"] svg { animation: fh-spin 1s linear infinite; }
+@keyframes fh-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .fh-refresh[aria-busy="true"] svg { animation: none; } }

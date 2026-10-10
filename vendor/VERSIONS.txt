@@ -1,0 +1,3 @@
+sql.js 1.10.3 (dist/sql-wasm.js, dist/sql-wasm.wasm)
+@supabase/supabase-js 2.57.4 (dist/umd/supabase.js -> supabase.umd.js)
+Chart.js 4.4.9
