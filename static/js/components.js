@@ -237,7 +237,7 @@
       setHTML(el, html`<div class="note-compose">
           <textarea class="input" rows="${compact ? 2 : 3}" placeholder="${placeholder}" aria-label="New note"></textarea>
           <div class="row"><button type="button" class="btn sm primary" data-note-add>Add note</button><label class="check small"><input type="checkbox" data-pin> Pin to Home</label>
-          <span class="small muted" style="margin-left:auto">${F.state.user ? `Signed ${F.state.user}` : 'Pick Roque or Jenny at the top to sign notes'}</span></div></div>
+          <span class="small muted" style="margin-left:auto">${F.state.user ? `Signed ${F.state.user}` : 'Unsigned'}</span></div></div>
         <div class="notes-list">${list.map((n) => html`<div class="note ${n.pinned ? 'pinned' : ''}" data-id="${n.id}">${F.avatar(n.author) || html`<span class="avatar">?</span>`}
           <div style="flex:1;min-width:0"><div class="body">${n.body}</div>
           <div class="meta"><span>${n.author || 'Unsigned'} · ${fmt.ago(n.created_at)}${n.updated_at ? ' · edited' : ''}</span>${n.pinned ? html`<span class="pill info">${icon('pin')}Pinned</span>` : ''}
@@ -322,7 +322,7 @@
             <div class="field full"><label>Tags</label><input class="input" name="tags" value="${(t.tags || '').split(',').filter((x) => x && x !== 'manual').join(', ')}" placeholder="comma separated, e.g. tax, reimbursable"></div>
             <label class="check full"><input type="checkbox" name="is_transfer" ${t.is_transfer ? raw('checked') : ''}> Transfer between our own accounts (exclude from spending and income)</label>
             <div class="row full"><button class="btn primary" type="submit">Save changes</button><button type="button" class="btn ghost" data-rule>${icon('rule')}Make a rule</button>
-              ${t.source === 'manual' ? html`<button type="button" class="btn ghost danger" data-del-manual style="margin-left:auto">${icon('trash')}Delete</button>` : ''}</div>
+              ${t.source === 'manual' ? html`<button type="button" class="btn ghost" data-edit-manual style="margin-left:auto">${icon('edit')}Amount, date…</button>` : ''}</div>
           </form></section>
           ${t.retailer || t.orders.length ? html`<section><h3>${t.orders.length ? 'What was bought' : `Link a ${fmt.label(t.retailer)} order`}</h3>
             <div class="stack" style="gap:10px">${t.orders.map(orderBlock)}</div>
@@ -355,13 +355,77 @@
         F.toast('Transaction saved'); F.loadMeta(true); changed();
       };
       $('[data-rule]', el).onclick = () => F.ruleModal({ pattern: t.merchant_name, field: 'merchant', category: $('[name=category]', form).value || t.category, subcategory: $('[name=subcategory]', form).value, priority: 50 }, changed);
-      const dm = $('[data-del-manual]', el);
-      if (dm) dm.onclick = async () => { if (await F.confirm('Delete this manual transaction?', `${t.description} · ${fmt.money(t.amount)}`)) { await F.del('/api/txn/manual', { id: t.txn_id }); F.toast('Deleted'); close(); changed(); } };
+      const em = $('[data-edit-manual]', el);
+      if (em) em.onclick = () => F.manualTxnModal(t, (what) => { close(); if (what !== 'deleted') F.openTxn(id, { onChange }); changed(); });
       $$('[data-link]', el).forEach((b) => (b.onclick = async () => { await F.post('/api/order_link', { txn_id: t.txn_id, order_id: b.dataset.link }); F.toast('Order linked'); close(); F.openTxn(id, { onChange }); changed(); }));
       $$('[data-unlink]', el).forEach((b) => (b.onclick = async () => { await F.post('/api/order_link', { txn_id: t.txn_id, order_id: b.dataset.unlink, action: 'unlink' }); F.toast('Order unlinked'); close(); F.openTxn(id, { onChange }); changed(); }));
       $$('[data-open]', el).forEach((b) => (b.onclick = () => { close(); F.openTxn(b.dataset.open, { onChange }); }));
       F.notesBlock($('#d-notes', el), 'transaction', t.txn_id, t.notes_list, { onChange: changed, compact: true });
     }, { label: 'Transaction details' });
+  };
+
+  /* ---------- hand-entered records (formerly the Manual entry page) ---------- */
+  /** Add or edit a hand-entered transaction (cash rent, a check, a charge on a card that isn't linked). */
+  F.manualTxnModal = (t = {}, onDone) => {
+    const accts = (F.meta?.accounts || []).slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    F.modal({
+      title: t.txn_id ? 'Edit transaction' : 'Add a transaction', sub: t.txn_id ? '' : 'For money the bank sync doesn’t see. It shows up everywhere a synced one does, marked “Manual”.',
+      body: html`<div class="form-grid">
+        <div class="field full"><label for="mt-acct">Account</label><select class="input" id="mt-acct" name="account_id" required>${accts.map((a) => html`<option value="${a.account_id}" ${a.account_id === t.account_id ? raw('selected') : ''}>${a.name}</option>`)}</select></div>
+        <div class="field"><label for="mt-date">Date</label><input class="input" id="mt-date" type="date" name="date" value="${t.posted_date || F.todayISO()}" required></div>
+        <fieldset class="field"><legend class="label">Direction</legend><div class="seg radio" role="radiogroup"><label class="check"><input type="radio" name="dir" value="out" ${!(t.amount > 0) ? raw('checked') : ''}> Money out</label><label class="check"><input type="radio" name="dir" value="in" ${t.amount > 0 ? raw('checked') : ''}> Money in</label></div></fieldset>
+        <div class="field"><label for="mt-amt">Amount</label><span class="money-wrap"><input class="input" id="mt-amt" name="amount" inputmode="decimal" value="${t.amount !== undefined ? Math.abs(t.amount) : ''}" required></span></div>
+        <div class="field"><label for="mt-desc">Description</label><input class="input" id="mt-desc" name="description" value="${t.description || ''}" required placeholder="e.g. Cash rent from tenant"></div>
+        <div class="field"><label for="mt-cat">Category</label><select class="input" id="mt-cat" name="category">${F.catOptions(t.category || '')}</select></div>
+        <div class="field"><label for="mt-sub">Subcategory</label><input class="input" id="mt-sub" name="subcategory" value="${t.subcategory || ''}"></div>
+        <div class="field"><label for="mt-ent">Entity</label><select class="input" id="mt-ent" name="entity">${F.entityOptions(t.entity)}</select></div>
+        <div class="field"><label for="mt-note">Note</label><input class="input" id="mt-note" name="notes" value="${t.notes || ''}"></div></div>`,
+      submit: t.txn_id ? 'Save' : 'Add transaction',
+      danger: t.txn_id ? { label: 'Delete', onClick: async () => { if (await F.confirm('Delete this transaction?', `${t.description} · ${fmt.money(t.amount)}`)) { await F.del('/api/txn/manual', { id: t.txn_id }); F.toast('Deleted'); onDone && onDone('deleted'); return true; } return false; } } : null,
+      onSubmit: async (v) => {
+        const amt = F.parseAmt(v.amount);
+        if (!v.description.trim() || amt === null || Number.isNaN(amt)) { F.toast('A description and an amount are required', { kind: 'error' }); return false; }
+        await F.post('/api/txn/manual', { ...v, txn_id: t.txn_id, amount: v.dir === 'in' ? Math.abs(amt) : -Math.abs(amt) });
+        F.toast(t.txn_id ? 'Transaction updated' : 'Transaction added'); onDone && onDone('saved');
+      },
+    });
+  };
+
+  const MANUAL_TYPES = ['loan', 'mortgage', 'auto_loan', 'heloc', 'credit_card', 'brokerage', 'savings', 'vehicle', 'property', 'other'];
+  /** Add or edit an account tracked by hand (a car, a loan, a 529…), with its first balance when new. */
+  F.manualAcctModal = (m = {}, onDone) => F.modal({
+    title: m.id ? `Edit ${m.name}` : 'Add an account by hand', sub: m.id ? '' : 'For anything the bank sync can’t see: a car, a private loan, a 529. Its balance counts toward net worth.',
+    body: html`<div class="form-grid">
+      <div class="field full"><label for="ma-name">Name</label><input class="input" id="ma-name" name="name" value="${m.name || ''}" required></div>
+      <div class="field"><label for="ma-kind">It’s a…</label><select class="input" id="ma-kind" name="kind">${[['asset', 'Asset'], ['debt', 'Debt']].map(([k, l]) => html`<option value="${k}" ${k === (m.kind || 'debt') ? raw('selected') : ''}>${l}</option>`)}</select></div>
+      <div class="field"><label for="ma-type">Type</label><select class="input" id="ma-type" name="type">${MANUAL_TYPES.map((x) => html`<option value="${x}" ${x === m.type ? raw('selected') : ''}>${F.typeLabel(x)}</option>`)}</select></div>
+      <div class="field"><label for="ma-holder">Holder</label><select class="input" id="ma-holder" name="holder">${(F.meta?.holders || []).map((h) => html`<option ${h === (m.holder || 'Joint') ? raw('selected') : ''}>${h}</option>`)}</select></div>
+      <div class="field"><label for="ma-ent">Entity</label><select class="input" id="ma-ent" name="entity">${F.entityOptions(m.entity)}</select></div>
+      <div class="field"><label for="ma-rate">Interest rate %</label><input class="input" id="ma-rate" name="rate" value="${m.rate ?? ''}" inputmode="decimal"></div>
+      <div class="field"><label for="ma-status">Status</label><select class="input" id="ma-status" name="status"><option value="open" ${m.status !== 'closed' ? raw('selected') : ''}>Open</option><option value="closed" ${m.status === 'closed' ? raw('selected') : ''}>Closed / paid off</option></select></div>
+      ${m.id ? '' : html`<div class="field"><label for="ma-bal">Current balance</label><span class="money-wrap"><input class="input" id="ma-bal" name="balance" inputmode="decimal"></span></div><div class="field"><label for="ma-asof">As of</label><input class="input" id="ma-asof" type="date" name="as_of" value="${F.todayISO()}"></div>`}
+      <label class="check full"><input type="checkbox" name="include_in_totals" ${m.include_in_totals !== 0 ? raw('checked') : ''}> Count in net worth</label>
+      <div class="field full"><label for="ma-notes">Notes</label><input class="input" id="ma-notes" name="notes" value="${m.notes || ''}"></div></div>`,
+    danger: m.id ? { label: m.sheet_loan ? 'Close account' : 'Delete', onClick: async () => {
+      if (!(await F.confirm(m.sheet_loan ? `Close ${m.name}?` : `Delete ${m.name}?`, m.sheet_loan ? 'It comes from the household sheet, so it’s closed rather than deleted.' : 'Its balance history is deleted too.', m.sheet_loan ? 'Close' : 'Delete'))) return false;
+      await F.del('/api/manual_account', { id: m.id }); F.toast(m.sheet_loan ? 'Account closed' : 'Account deleted'); onDone && onDone('deleted'); return true;
+    } } : null,
+    onSubmit: async (v) => {
+      if (!v.name.trim()) { F.toast('Give the account a name', { kind: 'error' }); return false; }
+      const bal = F.parseAmt(v.balance);
+      if (Number.isNaN(bal)) { F.toast('The balance must be a number', { kind: 'error' }); return false; }
+      const res = await F.post('/api/manual_account', { ...v, id: m.id, balance: bal === null ? '' : String(bal) });
+      F.toast('Account saved'); onDone && onDone('saved', res.id);
+    },
+  });
+
+  /** Card-payment progress for a month (every card, both holders): what Home shows and Pay cards details. */
+  F.cardSummary = (d) => {
+    const cards = (d.cards || []).filter((c) => !c.hidden);
+    const withBal = cards.filter((c) => (c.owed || 0) > 0.005 || +c.planned > 0);
+    const unpaid = cards.filter((c) => !c.paid).reduce((s, c) => s + (+c.planned || 0), 0);
+    return { count: withBal.length, paid: withBal.filter((c) => c.paid).length, unplanned: withBal.filter((c) => !c.paid && !(+c.planned > 0)).length,
+      unpaid, left: (d.totals?.checking || 0) - unpaid, checking: d.totals?.checking || 0 };
   };
 
   /* ---------- small helpers used by pages ---------- */

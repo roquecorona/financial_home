@@ -287,6 +287,18 @@
     return out;
   };
 
+  // Net worth by month from the first month with data (at most 36 months back) through month m.
+  H.networth_recent = function (m) {
+    const db = DB();
+    const ds = H.data_start();
+    let m0 = ds ? H.month_of(ds) : m;
+    const firsts = [db.one('SELECT MIN(as_of) FROM manual_snapshots'), db.one('SELECT MIN(month) FROM loan_balances')];
+    for (const f of firsts) if (f && f.slice(0, 7) < m0) m0 = f.slice(0, 7);
+    const lo = H.add_months(m, -36);
+    if (lo > m0) m0 = lo;
+    return H.networth_series(H.month_range(m0, m));
+  };
+
   // ---- GET handlers ----
   function api_home(q) {
     const db = DB();
@@ -296,12 +308,7 @@
     const [inc, sp] = H.month_flow(m);
     const [linc, lsp] = H.month_flow(lm);
     const ds = H.data_start();
-    let m0 = ds ? H.month_of(ds) : m;
-    const firsts = [db.one('SELECT MIN(as_of) FROM manual_snapshots'), db.one('SELECT MIN(month) FROM loan_balances')];
-    for (const f of firsts) if (f && f.slice(0, 7) < m0) m0 = f.slice(0, 7);
-    const lo = H.add_months(m, -36);
-    if (lo > m0) m0 = lo;
-    const nw = H.networth_series(H.month_range(m0, m));
+    const nw = H.networth_recent(m);
     const flow6 = [];
     for (let k = 5; k >= 0; k--) {
       const mm = H.add_months(m, -k);
@@ -339,7 +346,8 @@
         a.spark = days.map((d) => H.r2(w.at(d)));
       }
     }
-    return { totals, accounts: accts, manual: man };
+    // v3 addition: the net worth trend lives on Accounts (Home links here instead of repeating it).
+    return { totals, accounts: accts, manual: man, networth: H.networth_recent(thisMonth()) };
   }
 
   function api_account(q) {

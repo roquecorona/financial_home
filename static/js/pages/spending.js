@@ -18,7 +18,7 @@ F.pages.spending = async (root, r, ctl) => {
 
   F.setHTML(root, html`
     ${F.head({ title: 'Spending', lede: `${rangeLabel}. Card payments, transfers between our accounts and investment activity are left out; refunds reduce spending.`,
-      actions: html`<a class="btn" href="#/settings?tab=categories">Categories and rules</a>` })}
+      actions: html`<a class="btn" href="#/settings?tab=categories">Categories</a><button type="button" class="btn primary" data-add-txn>${icon('plus')}Add a transaction</button>` })}
     <div class="filters">
       <span class="hide-sm">${F.presetSeg(p.preset)}</span><span class="show-sm">${F.presetSelect(p.preset, 'preset-sel')}</span>
       ${p.preset === 'custom' ? html`<input type="date" class="input sm" data-p="start" value="${d.start}" aria-label="From"><input type="date" class="input sm" data-p="end" value="${d.end}" aria-label="To">` : ''}
@@ -46,8 +46,8 @@ F.pages.spending = async (root, r, ctl) => {
         ${d.merchants.length ? '' : F.empty('No spending in this range')}</div></section>
       <section class="panel span-3"><div class="panel-head"><h2>By card holder</h2></div><div class="panel-body flush">${F.hbars(d.by_holder.map((x) => ({ label: x.name, value: x.total, key: x.name })), { onClick: true, active: p.holder, valueFmt: (v) => fmt.amt(v, { cents: false }) })}</div></section>
       <section class="panel span-3"><div class="panel-head"><h2>By entity</h2></div><div class="panel-body flush" id="ent-bars">${F.hbars(d.by_entity.map((x) => ({ label: x.name, value: x.total, key: x.name })), { onClick: true, active: p.entity, valueFmt: (v) => fmt.amt(v, { cents: false }) })}</div></section>
-      <section class="panel span-12"><div class="panel-head"><h2>Budget versus actual</h2><span class="sub">Monthly budgets, compared with the average month in this range</span>
-        <div class="tools"><span class="small muted">${totalBudget ? `${fmt.money(totalBudget, { cents: false })} a month budgeted` : 'Type an amount to set a budget'}</span></div></div>
+      <section class="span-12"><details class="disclosure" id="budgets" ${p.budgets === '1' ? raw('open') : ''}><summary>Monthly budgets <span class="badge">${totalBudget ? fmt.money(totalBudget, { cents: false }) + ' a month' : 'none set'}</span></summary>
+        <p class="small ink2" style="margin:8px 0 4px">Type an amount to set a budget; the average month in this range is compared with it, and the category bars above mark it.</p>
         <div class="panel-body flush"><div class="table-wrap"><table class="t" id="budget-table"><thead><tr><th>Category</th><th class="num" style="width:150px">Monthly budget</th><th class="num">Average month</th><th style="width:30%" class="hide-sm">Average vs budget</th><th class="num">This range</th></tr></thead>
         <tbody>${d.categories.filter((c) => c.category !== 'Uncategorized').map((c) => {
           const avg = d.months_covered ? c.total / Math.max(d.months_covered, 1) : null;
@@ -58,7 +58,7 @@ F.pages.spending = async (root, r, ctl) => {
             <td class="num" data-label="Avg month">${avg !== null ? fmt.amt(avg, { cents: false }) : '—'}</td>
             <td class="hide-sm">${b ? html`<div class="row"><div class="meter ${pct > 1 ? 'over' : ''}" style="flex:1"><div style="width:${Math.min(100, pct * 100).toFixed(1)}%"></div></div><span class="small ${pct > 1 ? 'neg' : 'muted'}" style="width:48px;text-align:right">${fmt.pct(pct, 0)}</span></div>` : html`<span class="small muted">No budget</span>`}</td>
             <td class="num key">${fmt.amt(c.total, { cents: false })}</td></tr>`;
-        })}</tbody></table></div></div></section>
+        })}</tbody></table></div></div></details></section>
       <section class="panel span-12" id="spend-txns"></section>
     </div>`);
 
@@ -79,6 +79,10 @@ F.pages.spending = async (root, r, ctl) => {
     await F.post('/api/budget', { category: i.dataset.budget, monthly_amount: v === '' ? null : +v });
     F.toast(v === '' ? `Budget for ${i.dataset.budget} removed` : `Budget for ${i.dataset.budget} set to ${fmt.money(+v, { cents: false })} a month`);
   }));
+
+  const addTxn = () => F.manualTxnModal({}, () => table.reload());
+  $('[data-add-txn]', root).onclick = addTxn;
+  if (p.add === '1') { F.setParams({ ...p, add: '' }); setTimeout(addTxn, 0); }
 
   // category bars
   const periodMonths = Math.max(d.months_covered, 0);

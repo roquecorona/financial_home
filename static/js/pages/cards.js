@@ -56,7 +56,7 @@ F.pages.cards = async (root, r, ctl) => {
       const rest = acct ? acct.balance - v : null;
       return html`<span>${k}: <b>${fmt.amt(v)}</b>${acct ? html` of ${fmt.amt(acct.balance)} → <b class="${rest < 0 ? 'alert-text' : ''}">${fmt.amt(rest)}</b> left` : ''}</span>`;
     })}</div>` : '');
-    F.setHTML($('#paybar', root), html`<div><span>Planned</span><b>${fmt.amt(t.planned, { cents: false })}</b></div><div><span>To go out</span><b>${fmt.amt(t.allUnpaid, { cents: false })}</b></div>
+    F.setHTML($('#paybar', root), html`<div><span>Owed${owner === 'all' ? '' : ' · ' + short(owner)}</span><b>${fmt.amt(t.owed, { cents: false })}</b></div><div><span>To go out</span><b>${fmt.amt(t.allUnpaid, { cents: false })}</b></div>
       <div class="${t.left < 0 ? 'alert-text' : ''}"><span>Left</span><b>${fmt.amt(t.left, { cents: false })}</b></div><div><span>Paid</span><b>${t.paid}/${t.count}</b></div>`);
   };
 
@@ -82,6 +82,8 @@ F.pages.cards = async (root, r, ctl) => {
   };
 
   const fillBtn = (label, v, key) => (v !== null && v !== undefined && v > 0 ? html`<button type="button" data-fill-v="${v}" data-fill-k="${key}" aria-label="Plan ${label.toLowerCase()} ${fmt.money(v)}">${label} <span class="num">${fmt.amt(v, { cents: v < 1000 })}</span></button>` : '');
+  // One-tap fills: statement, minimum, full balance, and last month's plan when there was one.
+  const fills = (c) => html`${fillBtn('Stmt', num(c.statement_due), 'statement')}${fillBtn('Min', num(c.min_due), 'minimum')}${fillBtn('Full', (c.owed || 0) > 0 ? Math.round(c.owed * 100) / 100 : null, 'full')}${num(c.prev_planned) !== num(c.statement_due) ? fillBtn('Last mo.', num(c.prev_planned), 'like last month') : ''}`;
   const row = (c) => {
     const util = c.credit_limit && c.owed > 0 ? Math.min(1, c.owed / c.credit_limit) : null;
     const od = overdue(c);
@@ -98,7 +100,7 @@ F.pages.cards = async (root, r, ctl) => {
       <div class="c-plan"><label class="cell-label" for="pl-${c.card_key}">Planned</label><span class="money-wrap"><input class="input sm" id="pl-${c.card_key}" data-f="amount" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${c.planned ?? ''}" placeholder="0.00" aria-label="Planned payment, ${c.name}"></span></div>
       <div class="c-from"><label class="cell-label" for="pf-${c.card_key}">Pay from</label><select class="input sm" id="pf-${c.card_key}" data-f="pay_from" aria-label="Pay from, ${c.name}">${fromOptions(c.pay_from)}</select></div>
       <div class="c-paid"><button type="button" class="paid-toggle" data-paid aria-pressed="${String(!!c.paid)}" aria-label="${c.name} paid">${icon('check')}<span>${c.paid ? 'Paid' : 'Mark paid'}</span></button></div>
-      <div class="fills">${fillBtn('Stmt', num(c.statement_due), 'statement')}${fillBtn('Min', num(c.min_due), 'minimum')}${fillBtn('Full', (c.owed || 0) > 0 ? Math.round(c.owed * 100) / 100 : null, 'full')}</div>
+      <div class="fills">${fills(c)}</div>
       <div class="acts"><button type="button" class="btn xs hide-sm" data-full title="Plan the full amount owed" ${(c.owed || 0) > 0 ? '' : raw('disabled')}>Full</button>
         <button type="button" class="more-btn" data-more aria-expanded="${String(open)}" aria-label="More for ${c.name}">${icon('more')}</button></div>
       <div class="c-extra">
@@ -181,7 +183,7 @@ F.pages.cards = async (root, r, ctl) => {
   };
   const refreshFills = (rowEl, c) => {
     const box = $('.fills', rowEl); if (!box) return;
-    F.setHTML(box, html`${fillBtn('Stmt', num(c.statement_due), 'statement')}${fillBtn('Min', num(c.min_due), 'minimum')}${fillBtn('Full', (c.owed || 0) > 0 ? Math.round(c.owed * 100) / 100 : null, 'full')}`);
+    F.setHTML(box, fills(c));
     $$('[data-fill-v]', box).forEach((b) => (b.onclick = async () => { const v = +b.dataset.fillV; $('[data-f=amount]', rowEl).value = v.toFixed(2); await save(c, { amount: v }); flag(c, `Planned ${b.dataset.fillK}`); }));
   };
   const cardSettings = (c) => F.modal({
@@ -215,30 +217,29 @@ F.pages.cards = async (root, r, ctl) => {
     </div>
     <section id="pay-rows" aria-label="Cards"></section>
     <div class="paybar" id="paybar" aria-live="polite"></div>
-    <div class="grid">
-      <section class="span-6">${F.secHead(`Notes for ${fmt.month(month)}`)}<div class="panel-body" id="month-notes"></div></section>
-      <section class="span-6">${F.secHead('Payments that went out this month')}
-        ${cards.some((c) => c.payments.length) ? html`<div class="rows">${cards.flatMap((c) => c.payments.map((p) => ({ ...p, name: c.name }))).sort((a, b) => b.posted_date.localeCompare(a.posted_date)).map((p) => html`<button type="button" class="trow" data-txn="${p.txn_id}">
-          <span class="d">${fmt.date(p.posted_date)}</span><span class="t"><span class="ellipsis">${p.name}</span></span><span class="a">${fmt.amt(Math.abs(p.amount))}</span></button>`)}</div>`
-        : F.empty('No card payments posted yet this month')}</section>
-    </div>`);
+    <section class="month-notes">${F.secHead(`Notes for ${fmt.month(month)}`, { sub: 'Shared with the Notes page' })}<div id="month-notes"></div></section>`);
   drawTotals();
   draw();
   F.bindMonthNav(root, (m) => F.go(`#/cards?month=${m}`));
   F.notesBlock($('#month-notes', root), 'month', month, d.notes, { placeholder: 'e.g. Paying Hyatt Business in two parts this month' });
-  $$('.grid [data-txn]', root).forEach((b) => (b.onclick = () => F.openTxn(b.dataset.txn)));
   $$('[data-owner]', root).forEach((b) => (b.onclick = () => { owner = b.dataset.owner; setPref('owner', owner); $$('[data-owner]', root).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); draw(); drawTotals(); }));
   $$('[data-sort]', root).forEach((b) => (b.onclick = () => { sortBy = b.dataset.sort; setPref('sort', sortBy); $$('[data-sort]', root).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); draw(); }));
   $('[data-hide-paid]', root).onchange = (e) => { hidePaid = e.target.checked; setPref('hidePaid', hidePaid ? '1' : '0'); draw(); };
   $('[data-fill-all]', root).onclick = async (e) => {
+    const btn = e.currentTarget; // currentTarget is null after the first await
     const todo = cards.filter((c) => !c.hidden && ownerOk(c) && !c.paid && (c.planned === null || c.planned === undefined || c.planned === '') && ((c.statement_due ?? c.owed) > 0));
     if (!todo.length) { F.toast('Every card already has a planned amount'); return; }
     const ok = await F.confirm(`Plan ${todo.length} card${todo.length === 1 ? '' : 's'}?`, `Each unplanned ${owner === 'all' ? '' : short(owner) + ' '}card gets its statement balance, or the full balance when there’s no statement. Cards you already planned are left alone.`, 'Plan them', { danger: false });
     if (!ok) return;
-    e.currentTarget.disabled = true;
+    btn.disabled = true;
+    const items = todo.map((c) => ({ card_key: c.card_key, amount: Math.round(+(c.statement_due ?? c.owed) * 100) / 100 }));
     try {
-      for (const c of todo) { const v = +(c.statement_due ?? c.owed); c.planned = v; await F.post('/api/plan', { month, card_key: c.card_key, amount: v }); }
-      F.toast(`Planned ${todo.length} card${todo.length === 1 ? '' : 's'}`, { action: 'Undo', onAction: async () => { for (const c of todo) { c.planned = null; await F.post('/api/plan', { month, card_key: c.card_key, amount: null }); } draw(); drawTotals(); } });
-    } finally { draw(); drawTotals(); const b = $('[data-fill-all]', root); if (b) b.disabled = false; }
+      await F.post('/api/plan/bulk', { month, items });
+      todo.forEach((c, i) => { c.planned = items[i].amount; });
+      F.toast(`Planned ${todo.length} card${todo.length === 1 ? '' : 's'}`, { ms: 8000, action: 'Undo', onAction: async () => {
+        await F.post('/api/plan/bulk', { month, items: todo.map((c) => ({ card_key: c.card_key, amount: null })) });
+        todo.forEach((c) => { c.planned = null; }); draw(); drawTotals(); F.toast('Plans removed');
+      } });
+    } catch { /* F.api already showed why; nothing was saved */ } finally { draw(); drawTotals(); btn.disabled = false; }
   };
 };

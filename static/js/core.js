@@ -197,6 +197,11 @@ F.css = (name) => getComputedStyle(document.documentElement).getPropertyValue(na
    against the local sql.js copy of the data (DB). Errors keep v2's behavior: H.ApiError -> toast + err.status. */
 F.api = async (path, { method = 'GET', body, quiet = false } = {}) => {
   const m = String(method).toUpperCase();
+  if (m !== 'GET' && F.offline()) {
+    const msg = 'You’re offline, so this wasn’t saved. Try again when you’re back online.';
+    if (!quiet) toast(msg, { kind: 'error', ms: 6000 });
+    const e = new Error(msg); e.status = 0; throw e;
+  }
   if (m !== 'GET' && body !== undefined) {
     // Same 100 KB body limit and JSON round trip as the v2 server (drops undefined, copies the object).
     const s = JSON.stringify(body);
@@ -210,7 +215,7 @@ F.api = async (path, { method = 'GET', body, quiet = false } = {}) => {
     if (e.status === 401) { F.showLogin(); throw new Error('login'); }
     let msg = e.message;
     if (!e.status) { console.error('[api]', m, path, e); msg = `Something went wrong: ${e.name || 'Error'}`; e.status = 500; }
-    if (!quiet) toast(msg, { kind: 'error' });
+    if (!quiet) toast(msg, { kind: 'error', ms: m === 'GET' ? 3800 : 7000 });
     const err = new Error(msg); err.status = e.status; throw err;
   }
   if (data === undefined || data === null) throw new Error('The response was cut off. Try again.');
@@ -229,6 +234,7 @@ function toast(msg, { kind = '', action, onAction, ms = 3800 } = {}) {
   if (!host) { host = document.createElement('div'); host.className = 'toasts'; host.setAttribute('role', 'status'); host.setAttribute('aria-live', 'polite'); document.body.append(host); }
   const t = document.createElement('div');
   t.className = 'toast ' + kind;
+  if (kind === 'error') t.setAttribute('role', 'alert');
   setHTML(t, html`<span>${msg}</span>${action ? html`<button type="button">${action}</button>` : ''}`);
   if (action) t.querySelector('button').onclick = () => { onAction && onAction(); t.remove(); };
   host.append(t);
@@ -365,10 +371,12 @@ F.spark = (vals, { color = 'var(--ink)', w = 96, h = 28 } = {}) => {
 };
 
 /* ---------- router ---------- */
-/* Numbered navigation: 01 Home … 09 Notes, then the two record-keeping screens. */
+/* Numbered navigation: 01 Home … 09 Notes, then Settings. Hand-entered records live where they belong
+   (accounts on Accounts, transactions on Spending and in the transaction drawer, past balances on Investments,
+   ledger entries on Properties), so there is no separate "Manual entry" screen. */
 const NAV = [['home', 'Home'], ['accounts', 'Accounts'], ['cards', 'Pay cards'], ['bills', 'Bills'], ['spending', 'Spending'],
   ['orders', 'Orders'], ['investments', 'Investments'], ['properties', 'Properties'], ['notes', 'Notes']].map(([p, l], i) => [p, l, String(i + 1).padStart(2, '0')]);
-const NAV2 = [['manual', 'Manual entry', '10'], ['settings', 'Settings & data', '11']];
+const NAV2 = [['settings', 'Settings', '10']];
 const NAV_NUM = Object.fromEntries([...NAV, ...NAV2].map(([p, , n]) => [p, n]));
 /* Phone tab bar: the five things done most from a phone, then More. */
 const MOBILE = [['home', 'Home'], ['cards', 'Cards'], ['bills', 'Bills'], ['spending', 'Spending'], ['accounts', 'Accounts']];
@@ -393,6 +401,11 @@ let routeSeq = 0;
 F.route = async () => {
   const r = F.parseHash();
   if (r.page === 'txn' && r.id) { F.openTxn(r.id); history.replaceState(null, '', '#/spending'); r.page = 'spending'; }
+  // Old "Manual entry" links (bookmarks, notes): accounts → Accounts, transactions → Spending with the add form open.
+  if (r.page === 'manual') {
+    const to = r.params.tab === 'accounts' ? (r.params.id ? `#/accounts/manual-${r.params.id}` : `#/accounts${r.params.new === '1' ? '?new=1' : ''}`) : '#/spending?add=1';
+    history.replaceState(null, '', to); return F.route();
+  }
   const page = F.pages[r.page] ? r.page : 'home';
   const seq = ++routeSeq;
   while (overlay.stack.length) closeTop();
@@ -466,6 +479,7 @@ function openMore() {
   const rest = [...NAV, ...NAV2].filter(([p]) => !MOBILE.some((m) => m[0] === p));
   setHTML(el, html`<div class="ms-head"><span class="label">More</span><button type="button" class="icon-btn bare" data-close aria-label="Close">${icon('x')}</button></div>
     ${rest.map(([p, l, n]) => html`<a href="#/${p}" class="${p === cur ? 'active' : ''}" ${p === cur ? raw('aria-current="page"') : ''}><span class="n" aria-hidden="true">${n}</span><span>${l}</span></a>`)}
+    <div class="ms-prefs ms-sync"><span class="label" style="width:100%">Data</span><span class="small ink2" data-sync-text>${F.syncText()}</span><button type="button" class="btn sm" data-ms-refresh>Refresh</button></div>
     <div class="ms-prefs"><span class="label" style="width:100%">Theme</span><div class="seg" role="group" aria-label="Theme">${['light', 'dark', 'auto'].map((t) => html`<button type="button" data-theme-set="${t}" aria-pressed="${String(F.theme === t)}">${F.themeLabel(t)}</button>`)}</div></div>
     <button type="button" class="ms-item" id="ms-logout"><span class="n" aria-hidden="true">→</span><span>Sign out${F.state.user ? ` (${F.state.user})` : ''}</span></button>`);
   document.body.append(scrim, el);
@@ -478,6 +492,7 @@ function openMore() {
   $$('a', el).forEach((a) => a.addEventListener('click', close));
   $$('[data-theme-set]', el).forEach((b) => (b.onclick = () => F.setTheme(b.dataset.themeSet)));
   $('#ms-logout', el).onclick = signOut;
+  $('[data-ms-refresh]', el).onclick = () => { close(); F.refreshData(); };
   trapFocus(el);
   ($('a.active', el) || $('a', el)).focus();
 }
@@ -539,7 +554,7 @@ document.addEventListener('keydown', (e) => {
   if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); $('#gsearch')?.focus(); return; }
   if (F._g) {
-    const map = { h: 'home', a: 'accounts', s: 'spending', c: 'cards', b: 'bills', i: 'investments', p: 'properties', o: 'orders', n: 'notes', m: 'manual' };
+    const map = { h: 'home', a: 'accounts', s: 'spending', c: 'cards', b: 'bills', i: 'investments', p: 'properties', o: 'orders', n: 'notes', ',': 'settings' };
     if (map[e.key]) F.go('#/' + map[e.key]);
     F._g = false; return;
   }
@@ -566,29 +581,111 @@ F.signOut = async () => {
 F.localMode = () => /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname) && new URLSearchParams(location.search).get('local') === '1';
 
 const REFRESH_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/></svg>';
-F.refreshData = async () => {
-  if (DB.backend !== 'supabase') { toast('Refresh is only available when signed in.'); return; }
-  const b = $('#refresh-data'); if (b) b.setAttribute('aria-busy', 'true');
+/* ---------- sync status, offline, refresh ---------- */
+F.offline = () => typeof navigator !== 'undefined' && navigator.onLine === false && typeof DB !== 'undefined' && DB.backend === 'supabase';
+/** "Updated 4 min ago" / "Updating…" / "Offline · saved copy from 9:12". */
+F.syncText = () => {
+  if (typeof DB === 'undefined' || !DB.loadedAt) return '';
+  if (DB.refreshing) return 'Updating…';
+  const when = fmt.ago(DB.loadedAt);
+  if (F.offline()) return `Offline · copy from ${when}`;
+  return DB.backend === 'local' ? 'Local snapshot' : `Updated ${when}`;
+};
+F.updateSyncStatus = () => {
+  $$('[data-sync-text]').forEach((el) => { el.textContent = F.syncText(); });
+  const b = $('#refresh-data');
+  if (b) { const busy = typeof DB !== 'undefined' && DB.refreshing; b.classList.toggle('spinning', !!busy); if (busy) b.setAttribute('aria-busy', 'true'); else b.removeAttribute('aria-busy'); b.title = 'Refresh data · ' + F.syncText(); }
+  document.body.classList.toggle('is-offline', F.offline());
+  const banner = $('#offline-banner');
+  if (banner) banner.hidden = !F.offline();
+};
+let refreshFailed = 0;
+F.refreshData = async ({ quiet = false } = {}) => {
+  if (DB.backend !== 'supabase') { if (!quiet) toast('This is the local snapshot; there is nothing to refresh.'); return; }
+  if (F.offline()) { if (!quiet) toast('You’re offline. The copy on this device is shown until the connection is back.', { kind: 'error' }); return; }
+  F.manualRefresh = !quiet;
+  F.updateSyncStatus();
   try {
     await DB.refresh();
-    F.meta = null;
-    toast('Data refreshed');
+    refreshFailed = 0;
   } catch (e) {
-    if (e.code === 401 || e.status === 401) { F.showLogin(); return; }
-    toast(`Couldn’t refresh: ${e.msg || e.message}`, { kind: 'error' });
-  } finally { if (b) b.removeAttribute('aria-busy'); }
+    if (e.code === 401 || e.status === 401) { F.showLogin('Your session ended. Sign in again.'); return; }
+    refreshFailed++;
+    if (!quiet || refreshFailed === 1) toast(`Couldn’t refresh: ${e.msg || e.message}. Showing the copy saved on this device.`, { kind: 'error', ms: 6000 });
+  } finally { F.manualRefresh = false; F.updateSyncStatus(); }
 };
-F.dataStatus = () => DB.loadedAt ? `Data as of ${new Date(DB.loadedAt).toLocaleString()}${DB.fromCache ? ' (saved copy)' : ''}` : '';
+F.dataStatus = () => F.syncText();
+/** True while someone is mid-edit: typing in a field, a dialog or drawer open, or a save in flight. */
+F.isBusy = () => {
+  const a = document.activeElement;
+  if (overlay.stack.length || $('.popover')) return true;
+  if (a && a.closest && a.closest('#content') && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) || a.isContentEditable)) return true;
+  return !!$('#content .saved-flag:not(:empty)');
+};
+/* Fresh data landed in the background. Re-render now unless that would wipe out an edit in progress;
+   then offer it instead. */
+F.onDataRefreshed = () => {
+  F.meta = null;
+  F.updateSyncStatus();
+  if (!F.booted) return;
+  if (F.isBusy() && !F.manualRefresh) {
+    toast('Newer data is ready', { action: 'Show it', onAction: () => F.refresh(), ms: 12000 });
+    return;
+  }
+  F.refresh();
+  if (F.manualRefresh) toast('Data refreshed');
+};
 function addRefreshControl() {
   const right = $('.topbar-right');
   if (!right || $('#refresh-data')) return;
+  const st = document.createElement('span');
+  st.className = 'sync-status hide-sm'; st.setAttribute('data-sync-text', ''); st.setAttribute('aria-live', 'polite');
   const b = document.createElement('button');
   b.type = 'button'; b.id = 'refresh-data'; b.className = 'icon-btn fh-refresh';
-  b.setAttribute('aria-label', 'Refresh data'); b.title = 'Refresh data';
+  b.setAttribute('aria-label', 'Refresh data');
   b.innerHTML = REFRESH_SVG;
-  b.onclick = F.refreshData;
-  b.onmouseenter = () => { b.title = 'Refresh data\n' + F.dataStatus(); };
+  b.onclick = () => F.refreshData();
   right.insertBefore(b, $('#theme-btn', right));
+  right.insertBefore(st, b);
+  const banner = document.createElement('div');
+  banner.id = 'offline-banner'; banner.className = 'offline-banner'; banner.setAttribute('role', 'status'); banner.hidden = true;
+  banner.textContent = 'You’re offline. Showing the copy saved on this device; changes can’t be saved until you’re back online.';
+  $('.main').insertBefore(banner, $('#content'));
+  if (typeof DB !== 'undefined' && DB.onChange) DB.onChange((k) => { if (k === 'refreshing' || k === 'idle') F.updateSyncStatus(); });
+  window.addEventListener('online', () => { F.updateSyncStatus(); toast('Back online'); F.refreshData({ quiet: true }); });
+  window.addEventListener('offline', F.updateSyncStatus);
+  // Opening the app again after a while (phones keep the tab alive): fetch what changed.
+  let hiddenAt = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    const age = DB.loadedAt ? Date.now() - new Date(DB.loadedAt).getTime() : Infinity;
+    if (hiddenAt && age > 10 * 60000 && !DB.refreshing) F.refreshData({ quiet: true });
+  });
+  setInterval(F.updateSyncStatus, 60000);
+  initPullToRefresh();
+  F.updateSyncStatus();
+}
+/* Pull down at the top of a page on a phone to refresh (installed web apps have no browser pull-to-refresh). */
+function initPullToRefresh() {
+  if (!window.matchMedia('(pointer: coarse)').matches) return;
+  const ind = document.createElement('div');
+  ind.className = 'ptr'; ind.setAttribute('aria-hidden', 'true'); ind.innerHTML = REFRESH_SVG;
+  document.body.append(ind);
+  let y0 = null, dy = 0;
+  const reset = () => { y0 = null; dy = 0; ind.style.transform = ''; ind.classList.remove('armed', 'show'); };
+  document.addEventListener('touchstart', (e) => {
+    if (window.scrollY > 0 || overlay.stack.length || e.touches.length !== 1 || !e.target.closest('#content')) return;
+    y0 = e.touches[0].clientY;
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (y0 === null) return;
+    dy = e.touches[0].clientY - y0;
+    if (dy <= 0 || window.scrollY > 0) { reset(); return; }
+    const d = Math.min(dy, 120);
+    ind.classList.add('show'); ind.classList.toggle('armed', dy > 80);
+    ind.style.transform = `translateY(${d * 0.6}px) rotate(${d * 3}deg)`;
+  }, { passive: true });
+  document.addEventListener('touchend', () => { const go = y0 !== null && dy > 80; reset(); if (go) F.refreshData(); }, { passive: true });
 }
 
 async function startApp() {
@@ -621,7 +718,7 @@ async function boot() {
     await DB.init({
       backend: 'supabase', client: Auth.getClient(), email: session.user.email,
       onProgress: (p) => { if (!F.booted) Auth.renderProgress(app, p); },
-      onRefreshed: () => { if (F.booted) { F.meta = null; F.refresh(); } },
+      onRefreshed: () => F.onDataRefreshed(),
     });
   } catch (e) {
     if (e.code === 401) { F.showLogin('Your session ended. Sign in again.'); return; }

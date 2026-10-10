@@ -212,7 +212,14 @@
     const status = error && (error.status || error.statusCode);
     if (status === 401 || /JWT|jwt expired/i.test((error && error.message) || '')) return apiError(401, 'Please sign in');
     if ((error && error.code) === '42501' || status === 403) return apiError(403, `Not allowed to ${what}. Is this account on the household allow-list?`);
-    return apiError(502, `Could not ${what}: ${(error && error.message) || 'network error'}`);
+    const m = (error && error.message) || '';
+    const net = !m || /fetch|network|load failed|timeout|abort/i.test(m);
+    // Writes say plainly that nothing changed; table names stay out of the message.
+    if (/^(save|update|delete)/.test(what)) {
+      return apiError(502, net ? 'Couldn’t reach the server, so nothing was saved. Check the connection and try again.'
+        : `The server didn’t accept the change, so nothing was saved (${m}).`);
+    }
+    return apiError(502, net ? 'Couldn’t reach the server to load the data.' : `Couldn’t load the data (${m}).`);
   }
 
   // Run async jobs with limited concurrency.

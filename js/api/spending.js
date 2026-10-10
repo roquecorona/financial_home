@@ -110,6 +110,16 @@
     return o;
   }
 
+  // Match status of many orders in one query (same rule as match_status on order_detail, without loading every order).
+  function order_matches(where = '1=1', args = []) {
+    const rows = DB().Q(`SELECT o.order_id, o.total, o.order_date, COUNT(x.txn_id) AS n, COALESCE(SUM(-x.amount),0) AS linked
+        FROM orders o LEFT JOIN (SELECT l.order_id, t.txn_id, t.amount FROM order_links l JOIN transactions t ON t.txn_id=l.txn_id
+          JOIN accounts a USING(account_id) WHERE NOT EXISTS (SELECT 1 FROM order_link_rejects r WHERE r.txn_id=l.txn_id AND r.order_id=l.order_id)) x
+          ON x.order_id=o.order_id WHERE ${where} GROUP BY o.order_id ORDER BY o.order_date DESC`, args);
+    for (const r of rows) r.match = r.n ? match_status({ links: [1], total: r.total, linked_total: H.r2(r.linked) }) : 'unmatched';
+    return rows;
+  }
+
   function api_orders(q) {
     const db = DB();
     const w = ['1=1'], args = [];
@@ -124,28 +134,43 @@
       w.push('(o.order_id LIKE ? OR EXISTS (SELECT 1 FROM order_items i WHERE i.order_id=o.order_id AND (i.title LIKE ? OR i.sku LIKE ?)))');
       args.push(like, like, like);
     }
-    const ids = db.Q(`SELECT o.order_id FROM orders o WHERE ${w.join(' AND ')} ORDER BY o.order_date DESC LIMIT 300`, args).map((x) => x.order_id);
-    let orders = ids.map((oid) => order_detail(oid));
     const status = H.first(q, 'status');
-    if (status === 'matched' || status === 'partial' || status === 'unmatched') orders = orders.filter((o) => o.match === status);
+    const okStatus = status === 'matched' || status === 'partial' || status === 'unmatched';
+    // v3 addition: paging. Without limit/offset the result is exactly app.py's (newest 300, status filtered after the limit).
+    const paged = H.first(q, 'limit') !== null || H.first(q, 'offset') !== null;
+    let orders, filtered, keep = null;
+    if (paged) {
+      const limit = Math.min(500, Math.max(1, H.v_int(H.first(q, 'limit'), 'limit') || 300));
+      const offset = Math.max(0, H.v_int(H.first(q, 'offset'), 'offset') || 0);
+      let all = order_matches(w.join(' AND '), args);
+      if (okStatus) all = all.filter((o) => o.match === status);
+      filtered = all.length;
+      if (okStatus) keep = new Set(all.map((o) => o.order_id));
+      orders = all.slice(offset, offset + limit).map((o) => order_detail(o.order_id));
+    } else {
+      const ids = db.Q(`SELECT o.order_id FROM orders o WHERE ${w.join(' AND ')} ORDER BY o.order_date DESC LIMIT 300`, args).map((x) => x.order_id);
+      orders = ids.map((oid) => order_detail(oid));
+      if (okStatus) orders = orders.filter((o) => o.match === status);
+      filtered = null;
+    }
     const s60 = s || addDays(todayS(), -90);
     const charges = db.Q(`SELECT ${H.TXN_COLS} FROM transactions t JOIN accounts a USING(account_id) WHERE t.amount<0 AND t.posted_date>=?
         AND ((${H.RETAILER_SQL.amazon}) OR (${H.RETAILER_SQL.target}))
         AND NOT EXISTS (SELECT 1 FROM order_links l WHERE l.txn_id=t.txn_id AND NOT EXISTS (SELECT 1 FROM order_link_rejects x WHERE x.txn_id=l.txn_id AND x.order_id=l.order_id))
         ORDER BY t.posted_date DESC LIMIT 200`, [s60]);
     const counts = { total: db.one('SELECT COUNT(*) FROM orders'), items: db.one('SELECT COUNT(*) FROM order_items') };
-    const allo = db.Q('SELECT order_id FROM orders ORDER BY order_date DESC LIMIT 1000').map((x) => order_detail(x.order_id));
+    const allo = order_matches().slice(0, 1000);
     counts.matched = allo.filter((o) => o.match === 'matched').length;
     counts.partial = allo.filter((o) => o.match === 'partial').length;
     counts.unmatched = allo.filter((o) => o.match === 'unmatched').length;
     counts.unmatched_charges = charges.length;
+    counts.filtered = filtered === null ? orders.length : filtered;
     const spend = new Map();
-    for (const o of orders) {
-      for (const it of o.items) {
-        const k = it.category || 'Not set';
-        spend.set(k, (spend.has(k) ? spend.get(k) : 0) + (it.item_total || (it.unit_price || 0) * (it.quantity || 1)));
-      }
-    }
+    const addItem = (it) => { const k = it.category || 'Not set'; spend.set(k, (spend.has(k) ? spend.get(k) : 0) + (it.item_total || (it.unit_price || 0) * (it.quantity || 1))); };
+    if (paged) {
+      // every order matching the filters, not just this page
+      for (const it of db.Q(`SELECT i.* FROM order_items i JOIN orders o ON o.order_id=i.order_id WHERE ${w.join(' AND ')}`, args)) if (!keep || keep.has(it.order_id)) addItem(it);
+    } else for (const o of orders) for (const it of o.items) addItem(it);
     const item_categories = [...spend.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ name: k, total: H.r2(v) }));
     return { orders, unmatched_charges: charges, counts, item_categories };
   }

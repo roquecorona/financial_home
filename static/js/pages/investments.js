@@ -23,6 +23,8 @@ F.pages.investments = async (root, r, ctl) => {
   const classTotal = Object.values(d.allocation.by_class).reduce((s, v) => s + v, 0) || 1;
   const holdings = [...d.holdings].sort((a, b) => (b.market_value || 0) - (a.market_value || 0));
   const periodLabel = st.start_date ? `${fmt.date(F.addDays(st.start_date, 1), { year: true })} – ${fmt.date(st.end_date, { year: true })}` : '';
+  const hasCost = holdings.some((h) => h.cost_basis);
+  const hasHistory = d.series.filter((m) => !start || m.month >= start.slice(0, 7)).length >= 2;
   const pctOrDash = (v) => (v === null || v === undefined ? '—' : fmt.pct(v, 1, true));
 
   // ---------- forecast defaults ----------
@@ -54,11 +56,11 @@ F.pages.investments = async (root, r, ctl) => {
       ${F.kpi('XIRR', pctOrDash(st.xirr), 'Money-weighted, a year')}
       ${F.kpi('Dividends · fees', html`${fmt.amt(d.dividends.period, { cents: false })}<span class="of"> · ${fmt.amt(d.fees.period)}</span>`, 'Where the sync reports them', { vcls: 'sm' })}
     </section>
-    ${!st.enough_history ? html`<div class="callout warn" style="margin-top:16px">${icon('info')}<div>Returns need at least two valuations. The bank sync records one balance a day from now on; to see further back, add past statement balances with <b>Add a past balance</b>.</div></div>` : ''}
+    ${hasHistory && !st.enough_history ? html`<div class="callout warn" style="margin-top:16px">${icon('info')}<div>Returns need at least two valuations in this period. Pick a longer period or add past statement balances with <b>Add a past balance</b>.</div></div>` : ''}
     ${(d.snapshots || []).some((s) => (s.note || '').includes('TEST DATA')) ? html`<div class="callout warn" style="margin-top:12px">${icon('alert')}<div>Some snapshots are marked TEST DATA. Delete them in the Past balances table once real statements are entered.</div></div>` : ''}
     <div class="grid">
-      <section class="panel span-8"><div class="panel-head"><h2>Value over time</h2><span class="sub">${periodLabel || 'Month-end values'} · stacked by account</span></div>
-        <div class="panel-body"><div class="chart h-300" id="val-chart"></div><div id="val-legend"></div></div></section>
+      ${hasHistory ? html`<section class="panel span-8"><div class="panel-head"><h2>Value over time</h2><span class="sub">${periodLabel || 'Month-end values'} · stacked by account</span></div>
+        <div class="panel-body"><div class="chart h-300" id="val-chart"></div><div id="val-legend"></div></div></section>` : html`<section class="span-8">${F.secHead('Value over time')}${F.empty('Charts appear once there are two valuations', html`Value over time, growth versus contributions and market gain by month need at least two dated balances per account. The bank sync adds one a day from now on; to see further back, add each account’s balance from an old statement (for example every December 31).`, html`<button type="button" class="btn primary" data-add-snap>${icon('plus')}Add a past balance</button>`)}</section>`}
       <section class="panel span-4"><div class="panel-head"><h2>Contributions</h2><span class="sub">Employee vs employer where the description says</span></div>
         <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Who</th><th class="num">Year to date</th><th class="num">12 months</th><th class="num">All time</th></tr></thead><tbody>
           <tr><td>Employee</td><td class="num" data-label="YTD">${fmt.amt(c.ytd_employee, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12_employee, { cents: false })}</td><td class="num key">${fmt.amt(c.all_employee, { cents: false })}</td></tr>
@@ -66,20 +68,18 @@ F.pages.investments = async (root, r, ctl) => {
           <tr><td title="The 403(b) and snapshot-derived contributions don't say who paid">Not specified</td><td class="num" data-label="YTD">${fmt.amt(c.ytd_unspecified, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12_unspecified, { cents: false })}</td><td class="num key">${fmt.amt(c.all_unspecified, { cents: false })}</td></tr></tbody>
           <tfoot><tr><td>Total</td><td class="num" data-label="YTD">${fmt.amt(c.ytd, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12, { cents: false })}</td><td class="num key">${fmt.amt(c.all, { cents: false })}</td></tr></tfoot></table></div>
           <div class="panel-body" style="padding-top:6px"><p class="small ink2">Averaging <b>${fmt.money((c.avg_month_employee || 0) + (c.avg_month_employer || 0), { cents: false })}</b> a month over the last ${fmt.num(c.t12_months_covered, 1)} months on record. The 12-month figure covers only months with data.</p></div></div></section>
-      <section class="panel span-8"><div class="panel-head"><h2>What we put in versus what it’s worth</h2><span class="sub">The gap is market growth</span></div>
+      ${hasHistory ? html`<section class="panel span-8"><div class="panel-head"><h2>What we put in versus what it’s worth</h2><span class="sub">The gap is market growth</span></div>
         <div class="panel-body"><div class="chart h-260" id="cg-chart"></div>${F.legend([{ label: 'Value', color: F.css('--accent') }, { label: 'Starting value + net contributions', color: F.css('--ink'), type: 'dash' }])}</div></section>
-      <section class="panel span-4"><div class="panel-head"><h2>Market gain by month</h2></div><div class="panel-body"><div class="chart h-260" id="gain-chart"></div></div></section>
-      <section class="panel span-5"><div class="panel-head"><h2>Allocation by asset class</h2><div class="tools"><button class="btn sm ghost" data-edit-map>${icon('edit')}Edit mapping</button></div></div>
+      <section class="panel span-4"><div class="panel-head"><h2>Market gain by month</h2></div><div class="panel-body"><div class="chart h-260" id="gain-chart"></div></div></section>` : ''}
+      <section class="panel span-12"><div class="panel-head"><h2>Allocation by asset class</h2><div class="tools"><button class="btn sm ghost" data-edit-map>${icon('edit')}Edit mapping</button></div></div>
         <div class="panel-body"><div class="strip" role="img" aria-label="Asset class split">${Object.entries(d.allocation.by_class).map(([k, v]) => html`<div style="flex:${Math.max(v, 0)};background:${raw(classColor[k] || 'var(--s-other)')}" title="${k} ${fmt.pct(v / classTotal, 0)}"></div>`)}</div>
           <div class="list" style="margin-top:10px">${Object.entries(d.allocation.by_class).map(([k, v]) => html`<div class="row" style="padding:7px 0;border-top:1px solid var(--line-2)"><i class="dot" style="background:${raw(classColor[k] || 'var(--s-other)')}"></i><span style="flex:1">${k}</span><span class="num muted" style="width:56px;text-align:right">${fmt.pct(v / classTotal, 1)}</span><b class="num" style="width:110px;text-align:right">${fmt.amt(v, { cents: false })}</b></div>`)}</div>
           ${d.allocation.by_class.Other ? html`<p class="caption">“Other” covers holdings no mapping rule matched and accounts that only report a total.</p>` : ''}</div></section>
-      <section class="panel span-7"><div class="panel-head"><h2>Largest holdings</h2><span class="sub">Across the selected accounts</span></div>
-        <div class="panel-body flush">${F.hbars(holdings.slice(0, 9).map((h) => ({ label: (h.ticker ? h.ticker + ' · ' : '') + h.description, value: h.market_value, h })), { labelDot: (i) => classColor[i.h.asset_class] || 'var(--s-other)', sub: (i) => fmt.pct(i.value / classTotal, 1), valueFmt: (v) => fmt.amt(v, { cents: false }) })}</div></section>
-      <section class="panel span-12"><div class="panel-head"><h2>Holdings</h2><span class="sub">Cost basis shows only when the institution reports it</span></div>
-        <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Holding</th><th class="hide-sm">Account</th><th>Asset class</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Value</th><th class="num">Cost basis</th><th class="num">Unrealized</th></tr></thead>
+      <section class="panel span-12"><div class="panel-head"><h2>Holdings</h2><span class="sub">${hasCost ? 'Cost basis shows only when the institution reports it' : 'The institutions don’t report cost basis for these'}</span></div>
+        <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Holding</th><th class="hide-sm">Account</th><th>Asset class</th><th class="num">Shares</th><th class="num">Price</th><th class="num">Value</th>${hasCost ? html`<th class="num">Cost basis</th><th class="num">Unrealized</th>` : ''}</tr></thead>
           <tbody>${holdings.map((h) => html`<tr><td>${h.ticker ? html`<b>${h.ticker}</b> ` : ''}<span class="${h.ticker ? 'muted' : ''}">${h.description}</span></td><td class="hide-sm">${h.account}</td><td><span class="row" style="gap:6px"><i class="dot" style="background:${raw(classColor[h.asset_class] || 'var(--s-other)')}"></i>${h.asset_class}</span></td>
             <td class="num" data-label="Shares">${h.quantity !== null && h.quantity !== undefined ? fmt.num(h.quantity, 3) : '—'}</td><td class="num" data-label="Price">${h.price ? fmt.amt(h.price) : '—'}</td><td class="num key">${fmt.amt(h.market_value)}</td>
-            <td class="num" data-label="Cost">${h.cost_basis ? fmt.amt(h.cost_basis) : '—'}</td><td class="num ${h.unrealized > 0 ? 'pos' : ''}" data-label="Gain">${h.unrealized !== null && h.unrealized !== undefined ? fmt.amt(h.unrealized, { sign: true }) : '—'}</td></tr>`)}</tbody></table></div></div></section>
+            ${hasCost ? html`<td class="num" data-label="Cost">${h.cost_basis ? fmt.amt(h.cost_basis) : '—'}</td><td class="num ${h.unrealized > 0 ? 'pos' : ''}" data-label="Gain">${h.unrealized !== null && h.unrealized !== undefined ? fmt.amt(h.unrealized, { sign: true }) : '—'}</td>` : ''}</tr>`)}</tbody></table></div></div></section>
       <section class="panel span-12" id="forecast"></section>
       <section class="panel span-7"><div class="panel-head"><h2>Past balances</h2><span class="sub">Statement values you enter fill in history before the sync started</span><div class="tools"><button class="btn sm" data-add-snap>${icon('plus')}Add</button></div></div>
         <div class="panel-body flush"><div class="table-wrap" style="max-height:420px;overflow-y:auto"><table class="t"><thead><tr><th>Date</th><th>Account</th><th class="num">Balance</th><th class="num hide-sm">Contributions YTD</th><th class="hide-sm">Note</th><th></th></tr></thead>
@@ -244,7 +244,7 @@ F.pages.investments = async (root, r, ctl) => {
     const ser = d.series.filter((m) => !start || m.month >= start.slice(0, 7));
     const labels = ser.map((m) => fmt.month(m.month, { short: true }));
     const accts = d.accounts.filter((a) => selAccts.has(a.account_id) && ser.some((m) => m.by_account[a.account_id]));
-    if (ser.length >= 2) {
+    if (hasHistory) {
       const o = F.chartOpts({ kind: 'line', stacked: true });
       o.plugins.tooltip.callbacks.footer = (items) => `Total ${fmt.money(items.reduce((s, i) => s + (i.parsed.y || 0), 0), { cents: false })}`;
       F.chart($('#val-chart', root), { type: 'line', aria: 'Value over time by account', data: { labels, datasets: accts.map((a, i) => ({
@@ -258,8 +258,6 @@ F.pages.investments = async (root, r, ctl) => {
       const gains = ser.map((m) => (m.has_valuation ? m.gain : null));
       F.chart($('#gain-chart', root), { type: 'bar', aria: 'Market gain by month', data: { labels, datasets: [F.barDs('Market gain', gains, gains.map((g) => (g >= 0 ? F.css('--accent') : F.css('--ink'))))] },
         options: (() => { const o3 = F.chartOpts({ kind: 'bar' }); o3.scales.y.beginAtZero = true; return o3; })() });
-    } else {
-      ['#val-chart', '#cg-chart', '#gain-chart'].forEach((s) => { $(s, root).classList.add('is-empty'); F.setHTML($(s, root), F.empty('Not enough history yet', 'Add past balances to draw this.')); });
     }
     runForecast();
   };

@@ -17,9 +17,9 @@ F.pages.bills = async (root, r, ctl) => {
   const ordinal = (n) => n + (['th', 'st', 'nd', 'rd'][(n % 100 - 20) % 10] || ['th', 'st', 'nd', 'rd'][n % 100] || 'th');
   const byId = (id) => d.bills.find((b) => b.bill_id === +id);
 
-  const setStatus = async (b, paid, txn) => {
+  const setStatus = async (b, paid, txn, input) => {
     const body = paid ? { month, bill_id: b.bill_id, paid: true, txn_id: txn ? txn.txn_id : null, amount_paid: txn ? Math.abs(txn.amount) : b.amount } : { month, bill_id: b.bill_id, paid: false };
-    await F.post('/api/bill_status', body);
+    try { await F.post('/api/bill_status', body); } catch { if (input) input.checked = !paid; return; } // not saved: put the tick back
     if (paid) F.toast(`${b.item} marked paid`, { action: 'Undo', onAction: async () => { await F.post('/api/bill_status', { month, bill_id: b.bill_id, paid: false }); F.refresh(); } });
     F.refresh();
   };
@@ -78,15 +78,14 @@ F.pages.bills = async (root, r, ctl) => {
 
   const overdueN = d.bills.filter((b) => b.state === 'overdue').length;
   F.setHTML(root, html`
-    ${F.head({ title: 'Bills', compactSm: true, lede: 'Recurring bills from Jenny’s sheet. When a matching bank payment shows up, it’s offered here so you can confirm it in one tap.',
+    ${F.head({ title: 'Bills', compactSm: true, lede: 'Tick bills off as they’re paid. A matching bank payment is offered so you can confirm it in one tap.',
       actions: html`${F.monthNav(month, d.months)}<div class="seg" role="group" aria-label="View"><button type="button" data-view="list" aria-pressed="${String(view === 'list')}">List</button><button type="button" data-view="calendar" aria-pressed="${String(view === 'calendar')}">Calendar</button></div>
       <button type="button" class="btn primary" data-add>${icon('plus')}Add bill</button>` })}
-    <section class="band" style="--n:4" aria-label="Totals">
+    <section class="band" style="--n:3" aria-label="Totals">
       ${F.kpi('Bills this month', F.kpiMoney(t.total), `${t.count} active bills`)}
       ${F.kpi('Paid', html`${t.paid}<span class="of">/${t.count}</span>`, `${fmt.money(t.paid_total, { cents: false })} paid`)}
       ${F.kpi('Still to pay', F.kpiMoney(t.remaining), overdueN ? html`<span class="alert-text">${overdueN} past due</span>` : 'None past due')}
-      ${F.kpi('Payments found', String(t.suggested), t.suggested ? 'Ready to confirm' : 'Nothing to confirm')}
-    </section>
+      </section>
     ${t.suggested ? html`<div class="callout accent">${icon('link')}<div>${t.suggested} bill${t.suggested === 1 ? ' has' : 's have'} a matching bank payment (amount within 5% and the name matches).</div><button type="button" class="btn sm primary" data-accept-all>Mark all ${t.suggested} paid</button></div>` : ''}
     ${view === 'list' ? html`<div class="paytools" role="toolbar" aria-label="List options"><div class="seg" role="group" aria-label="Order"><button type="button" data-order="due" aria-pressed="${String(order === 'due')}">By due date</button><button type="button" data-order="group" aria-pressed="${String(order === 'group')}">By group</button></div>
       <label class="check small"><input type="checkbox" data-hide-paid ${hidePaid ? raw('checked') : ''}> Hide paid</label></div>` : ''}
@@ -95,7 +94,7 @@ F.pages.bills = async (root, r, ctl) => {
   const bind = () => {
     $$('[data-bill]', root).forEach((el) => {
       const b = byId(el.dataset.bill);
-      $('[data-paid]', el).onchange = (e) => setStatus(b, e.target.checked, null);
+      $('[data-paid]', el).onchange = (e) => setStatus(b, e.target.checked, null, e.target);
       $$('[data-match]', el).forEach((m) => (m.onclick = () => { m.disabled = true; setStatus(b, true, b.suggestions.find((s) => s.txn_id === m.dataset.match)); }));
       $('[data-edit]', el).onclick = () => billModal(b);
     });
@@ -113,11 +112,10 @@ F.pages.bills = async (root, r, ctl) => {
     const todo = d.bills.filter((x) => !x.paid && x.suggestions.length);
     if (!(await F.confirm(`Mark ${todo.length} bill${todo.length === 1 ? '' : 's'} paid?`, todo.map((b) => `${b.item} ${fmt.money(Math.abs(b.suggestions[0].amount))} on ${fmt.date(b.suggestions[0].posted_date)}`).join(' · '), 'Mark paid', { danger: false }))) return;
     acc.disabled = true;
-    for (const b of todo) {
-      const s = b.suggestions[0];
-      await F.post('/api/bill_status', { month, bill_id: b.bill_id, paid: true, txn_id: s.txn_id, amount_paid: Math.abs(s.amount) });
-    }
-    F.toast(`Marked ${todo.length} paid`, { action: 'Undo', onAction: async () => { for (const b of todo) await F.post('/api/bill_status', { month, bill_id: b.bill_id, paid: false }); F.refresh(); } });
+    try {
+      await F.post('/api/bill_status/bulk', { month, items: todo.map((b) => ({ bill_id: b.bill_id, paid: true, txn_id: b.suggestions[0].txn_id, amount_paid: Math.abs(b.suggestions[0].amount) })) });
+    } catch { acc.disabled = false; return; }
+    F.toast(`Marked ${todo.length} paid`, { ms: 8000, action: 'Undo', onAction: async () => { await F.post('/api/bill_status/bulk', { month, items: todo.map((b) => ({ bill_id: b.bill_id, paid: false })) }); F.refresh(); } });
     F.refresh();
   };
   function billModal(b) {

@@ -22,7 +22,7 @@ See `ARCHITECTURE.md` for the contract between the data layer, the API handlers 
 
 | Path | What |
 |---|---|
-| `index.html`, `manifest.webmanifest` | Entry page (relative paths; served under `/financial-home/`) |
+| `index.html`, `manifest.webmanifest` | Entry page (relative paths; served under `/financial_home/`) |
 | `js/data/` | Supabase config, SQLite schema, `DB` data layer, auth + login screen |
 | `js/api/` | `API` router and the ported handlers |
 | `static/` | Styles, fonts, icons, UI scripts and pages |

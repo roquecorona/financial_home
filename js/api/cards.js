@@ -146,6 +146,10 @@
     const H = _H();
     const m = H.v_month(H.first(q, 'month'));
     const cards = cards_for_month(m);
+    // v3 addition: last month's planned amount per card (enables "Same as last month").
+    const prev = new Map();
+    for (const r of _DB().Q('SELECT account_id, amount FROM payment_plan WHERE month=?', [H.add_months(m, -1)])) prev.set(r.account_id, r.amount);
+    for (const c of cards) c.prev_planned = prev.has(c.card_key) ? prev.get(c.card_key) : null;
     const cash = H.linked_accounts("a.type IN ('checking','savings')").slice();
     const vis = cards.filter((c) => !c.hidden);
     const owed = sum(vis.filter((c) => por(c.owed, 0) > 0).map((c) => por(c.owed, 0)));
@@ -261,12 +265,9 @@
   // ---- writes ------------------------------------------------------------------------------------------------------
   // Python runs each handler in one transaction that is rolled back on ApiError, so every validation below happens
   // before the first write (same order, same messages); writes go through DB.* (Supabase first, then local mirror).
-  async function post_plan(b) {
+  // One payment_plan row after applying body b (only keys present change) on top of the current row `cur`.
+  function plan_row(b, m, key, cur) {
     const H = _H(), DB = _DB();
-    b = b || {};
-    const m = H.v_month(g(b, 'month'));
-    const key = H.v_str(por(g(b, 'card_key'), g(b, 'account_id')), 'card_key', true, 80);
-    const cur = DB.row('SELECT * FROM payment_plan WHERE month=? AND account_id=?', [m, key]) || {};
     const vals = {
       amount: g(cur, 'amount'), pay_from: g(cur, 'pay_from'), due_date: g(cur, 'due_date'), paid: por(g(cur, 'paid'), 0),
       note: g(cur, 'note'), statement_due: g(cur, 'statement_due'), min_due: g(cur, 'min_due'), owed_override: g(cur, 'owed_override'),
@@ -278,12 +279,42 @@
     if (has(b, 'due_date')) vals.due_date = H.v_date(g(b, 'due_date'), 'due_date');
     if (has(b, 'paid')) vals.paid = pyt(g(b, 'paid')) ? 1 : 0;
     if (has(b, 'note')) vals.note = H.v_str(g(b, 'note'), 'note', false, 1000);
-    await DB.upsert('payment_plan', {
+    return {
       month: m, account_id: key, amount: vals.amount, pay_from: vals.pay_from, due_date: vals.due_date, paid: vals.paid,
       note: vals.note, statement_due: vals.statement_due, min_due: vals.min_due, owed_override: vals.owed_override,
       updated_at: H.now_s(), updated_by: DB.user,
-    }, ['month', 'account_id']);
+    };
+  }
+
+  async function post_plan(b) {
+    const H = _H(), DB = _DB();
+    b = b || {};
+    const m = H.v_month(g(b, 'month'));
+    const key = H.v_str(por(g(b, 'card_key'), g(b, 'account_id')), 'card_key', true, 80);
+    const cur = DB.row('SELECT * FROM payment_plan WHERE month=? AND account_id=?', [m, key]) || {};
+    await DB.upsert('payment_plan', plan_row(b, m, key, cur), ['month', 'account_id']);
     return { ok: true };
+  }
+
+  // v3 addition: many cards in ONE write ("Plan every card" and its Undo). Same per-item semantics as /api/plan;
+  // everything is validated before the write, so a bad item changes nothing.
+  //   body: { month, items: [{ card_key, amount?, paid?, pay_from?, statement_due?, min_due?, due_date?, note? }] }
+  async function post_plan_bulk(b) {
+    const H = _H(), DB = _DB();
+    b = b || {};
+    const m = H.v_month(g(b, 'month'));
+    const items = g(b, 'items');
+    if (!Array.isArray(items) || !items.length) throw new H.ApiError(400, 'items must be a non-empty list');
+    if (items.length > 60) throw new H.ApiError(400, 'At most 60 items at a time');
+    const rows = new Map();
+    for (const it of items) {
+      if (!it || typeof it !== 'object') throw new H.ApiError(400, 'Each item must be an object');
+      const key = H.v_str(por(g(it, 'card_key'), g(it, 'account_id')), 'card_key', true, 80);
+      const cur = rows.get(key) || DB.row('SELECT * FROM payment_plan WHERE month=? AND account_id=?', [m, key]) || {};
+      rows.set(key, plan_row(it, m, key, cur));
+    }
+    await DB.upsert('payment_plan', [...rows.values()], ['month', 'account_id']);
+    return { ok: true, updated: rows.size };
   }
 
   async function post_card_settings(b) {
@@ -356,10 +387,9 @@
     return { ok: true };
   }
 
-  async function post_bill_status(b) {
+  // One bill_status row for bill_id in month m from body b; `prev` is the existing row (its note is kept).
+  function bill_status_row(b, m, prev) {
     const H = _H(), DB = _DB();
-    b = b || {};
-    const m = H.v_month(g(b, 'month'));
     const bid = H.v_int(g(b, 'bill_id'), 'bill_id', true);
     const paid = pyt(g(b, 'paid')) ? 1 : 0;
     const tid = paid ? H.v_str(g(b, 'txn_id'), 'txn_id', false, 200) : null;
@@ -369,14 +399,41 @@
       amt = r ? Math.abs(r.amount) : null;
     }
     const note = H.v_str(g(b, 'note'), 'note', false, 500);
+    if (prev === undefined) prev = DB.row('SELECT note FROM bill_status WHERE month=? AND bill_id=?', [m, bid]);
     // ON CONFLICT ... note=COALESCE(excluded.note, bill_status.note)
-    const prev = DB.row('SELECT note FROM bill_status WHERE month=? AND bill_id=?', [m, bid]);
-    await DB.upsert('bill_status', {
+    return {
       month: m, bill_id: bid, paid, amount_paid: paid ? amt : null,
       note: note !== null ? note : (prev ? g(prev, 'note') : null),
       txn_id: tid, paid_at: paid ? H.now_s() : null, paid_by: paid ? DB.user : null,
-    }, ['month', 'bill_id']);
+    };
+  }
+
+  async function post_bill_status(b) {
+    const H = _H(), DB = _DB();
+    b = b || {};
+    const m = H.v_month(g(b, 'month'));
+    await DB.upsert('bill_status', bill_status_row(b, m), ['month', 'bill_id']);
     return { ok: true };
+  }
+
+  // v3 addition: tick or untick many bills in ONE write ("Mark all paid" and its Undo). Same per-item semantics as
+  // /api/bill_status; validated before the write.   body: { month, items: [{ bill_id, paid, txn_id?, amount_paid?, note? }] }
+  async function post_bill_status_bulk(b) {
+    const H = _H(), DB = _DB();
+    b = b || {};
+    const m = H.v_month(g(b, 'month'));
+    const items = g(b, 'items');
+    if (!Array.isArray(items) || !items.length) throw new H.ApiError(400, 'items must be a non-empty list');
+    if (items.length > 100) throw new H.ApiError(400, 'At most 100 items at a time');
+    const rows = new Map();
+    for (const it of items) {
+      if (!it || typeof it !== 'object') throw new H.ApiError(400, 'Each item must be an object');
+      const bid = H.v_int(g(it, 'bill_id'), 'bill_id', true);
+      const r = bill_status_row(it, m, rows.has(bid) ? rows.get(bid) : undefined);
+      rows.set(r.bill_id, r);
+    }
+    await DB.upsert('bill_status', [...rows.values()], ['month', 'bill_id']);
+    return { ok: true, updated: rows.size };
   }
 
   async function post_budget(b) {
@@ -474,12 +531,12 @@
   const A = _API();
   Object.assign(A.get, { '/api/cards': api_cards, '/api/bills': api_bills });
   Object.assign(A.post, {
-    '/api/plan': post_plan, '/api/card_settings': post_card_settings, '/api/bill': post_bill, '/api/bill_status': post_bill_status,
+    '/api/plan': post_plan, '/api/plan/bulk': post_plan_bulk, '/api/bill_status/bulk': post_bill_status_bulk, '/api/card_settings': post_card_settings, '/api/bill': post_bill, '/api/bill_status': post_bill_status,
     '/api/budget': post_budget, '/api/manual_account': post_manual_account, '/api/manual_balance': post_manual_balance,
   });
   Object.assign(A.del, {
     '/api/bill': del_bill, '/api/manual_account': del_manual_account, '/api/manual_balance': del_manual_balance,
   });
-  Object.assign(Hh, { api_cards, api_bills, post_plan, post_card_settings, post_bill, del_bill, post_bill_status, post_budget,
+  Object.assign(Hh, { api_cards, api_bills, post_plan, post_plan_bulk, post_bill_status_bulk, post_card_settings, post_bill, del_bill, post_bill_status, post_budget,
     post_manual_account, del_manual_account, post_manual_balance, del_manual_balance });
 })();
