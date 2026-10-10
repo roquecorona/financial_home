@@ -97,10 +97,18 @@ F.pages.settings = async (root, r, ctl) => {
 
   F.setHTML(root, html`${head}<div class="grid"><section class="panel span-6"><div class="panel-head"><h2>This device</h2></div><div class="panel-body stack" style="gap:20px">
     <div class="field"><span class="label">Signed in as</span><div class="who-name">${F.state.user || '—'}</div><span class="hint">Notes and edits are signed with the name on your sign-in.</span></div>
+    <div class="field"><label class="label" for="pw1">Password</label><input class="input" id="pw1" type="password" autocomplete="new-password" placeholder="New password (10+ characters)"><input class="input" id="pw2" type="password" autocomplete="new-password" placeholder="Repeat it" style="margin-top:8px"><div class="row" style="margin-top:8px"><button class="btn primary" type="button" data-setpw>Set password</button></div><span class="hint">Lets you sign in with email + password instead of an emailed link.</span></div>
     <div class="field"><span class="label" id="th-l">Theme</span><div class="seg" role="group" aria-labelledby="th-l">${['light', 'dark', 'auto'].map((k) => html`<button type="button" data-theme-set="${k}" aria-pressed="${String(F.theme === k)}">${F.themeLabel(k)}</button>`)}</div><span class="hint">Light is the default. “Match device” follows the phone or laptop setting.</span></div>
     </div></section>
     <section class="panel span-6"><div class="panel-head"><h2>Keyboard shortcuts</h2></div><div class="panel-body"><dl class="kv">
       <dt><kbd>/</kbd></dt><dd>Search everything</dd><dt><kbd>g</kbd> then <kbd>h</kbd></dt><dd>Home (also a accounts, s spending, c cards, b bills, i investments, p properties, o orders, n notes, m manual)</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close a panel or dialog</dd><dt><kbd>Enter</kbd></dt><dd>Open the focused transaction</dd></dl></div></section></div>`);
   $$('[data-theme-set]', root).forEach((b) => (b.onclick = () => F.setTheme(b.dataset.themeSet)));
+  const spw = $('[data-setpw]', root);
+  if (spw) spw.onclick = async () => {
+    const a = $('#pw1', root).value, b = $('#pw2', root).value;
+    if (a !== b) { F.toast('The two passwords don’t match', { kind: 'error' }); return; }
+    try { await Auth.setPassword(a); $('#pw1', root).value = ''; $('#pw2', root).value = ''; F.toast('Password set'); }
+    catch (e) { F.toast(e.message || 'Couldn’t set the password', { kind: 'error' }); }
+  };
 };

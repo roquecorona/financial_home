@@ -48,6 +48,12 @@
     if (error) throw error;
   };
 
+  Auth.setPassword = async (password) => {
+    if (!password || password.length < 10) throw new Error('Use at least 10 characters.');
+    const { error } = await Auth.getClient().auth.updateUser({ password });
+    if (error) throw error;
+  };
+
   Auth.signOut = async () => {
     let email = null;
     try { email = (await Auth.session())?.user?.email || null; } catch (e) { /* ignore */ }
