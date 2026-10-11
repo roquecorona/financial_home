@@ -58,6 +58,10 @@
     return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
   };
 
+  // our ownership share of a property row (properties.ownership_pct, percent; NULL or missing = 100%)
+  const propShare = (p) => (p.ownership_pct === null || p.ownership_pct === undefined || p.ownership_pct === '' ? 1 : Number(p.ownership_pct) / 100);
+  const COALESCE_STATUS = (p) => p.status || '';
+
   // ---- helpers ----
   H.balance_totals = function (include_re = true) {
     const accts = H.linked_accounts();
@@ -78,8 +82,9 @@
       else t.other_assets += m.balance;
     }
     if (include_re) {
-      for (const p of DB().Q("SELECT est_value FROM properties WHERE est_value IS NOT NULL AND COALESCE(status,'') != 'sold'")) {
-        t.real_estate += p.est_value;
+      // our share of each property we still own (ownership_pct NULL = 100%)
+      for (const p of DB().Q("SELECT * FROM properties WHERE est_value IS NOT NULL AND COALESCE(status,'') != 'sold'")) {
+        t.real_estate += p.est_value * propShare(p);
       }
     }
     t.assets = t.cash + t.investments + t.other_assets + t.real_estate;
@@ -103,7 +108,12 @@
     }
     const mans = db.Q('SELECT * FROM manual_accounts').filter((m) => pyTrue(m.include_in_totals) || m.status === 'closed');
     const mpts = new Map(mans.map((m) => [m.id, H.manual_points(m)]));
-    const re_val = H.pysum(db.Q("SELECT est_value FROM properties WHERE est_value IS NOT NULL AND COALESCE(status,'')!='sold'").map((p) => p.est_value));
+    // real estate at a date: our share of what we owned then. A sold property counts (at its sale price) only before
+    // its sale_date; without a sale_date it is simply left out, as before.
+    const props = db.Q('SELECT * FROM properties');
+    const re_at = (d) => H.pysum(props.filter((p) => (COALESCE_STATUS(p) !== 'sold' ? p.est_value != null
+      : !!p.sale_date && d < p.sale_date && (p.sale_price ?? p.est_value) != null))
+      .map((p) => (COALESCE_STATUS(p) !== 'sold' ? p.est_value : (p.sale_price ?? p.est_value)) * propShare(p)));
     const material = {};
     for (const a of accts) {
       const aid = a.account_id;
@@ -149,6 +159,7 @@
         if (ma.kind === 'debt') loans += Math.abs(v);
         else assets += v;
       }
+      const re_val = re_at(d);
       assets += cash + invest + re_val;
       liab = cards + loans;
       out.push({ month: m, date: d, cash: H.r2(cash), cards: H.r2(cards), investments: H.r2(invest), loans: H.r2(loans),
@@ -290,6 +301,8 @@
       out.push({ level: 'info', kind: 'orders', title: 'No Amazon or Target orders imported yet',
         detail: 'Run scripts/ingest_orders.py to see item-level detail on those charges', link: '#/orders' });
     }
+    // v3: card promo (0% APR) periods ending within 45 days go first (H.promo_alerts lives in cards.js)
+    if (typeof H.promo_alerts === 'function') out.unshift(...H.promo_alerts());
     return out;
   };
 

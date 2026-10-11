@@ -3,9 +3,10 @@
 F.pages.spending = async (root, r, ctl) => {
   const { html, raw, fmt, icon, $, $$ } = F;
   const p = Object.assign({ preset: '3m' }, r.params);
+  if (p.view === 'review') return F.reviewView(root, r, ctl);
   const rng = p.preset === 'all' ? { start: F.meta.data_start || '', end: F.todayISO() } : F.presetRange(p.preset, p);
-  const q = { start: rng.start, end: rng.end, holder: p.holder, entity: p.entity, account: p.account, category: p.category && p.category !== '__none__' ? p.category : undefined };
-  const d = await F.get('/api/spending', q);
+  const q = { start: rng.start, end: rng.end, holder: p.holder, entity: p.entity, account: p.account, person: p.person, category: p.category && p.category !== '__none__' ? p.category : undefined };
+  const [d, rv] = await Promise.all([F.get('/api/spending', q), F.get('/api/review', { summary: 1 }).catch(() => null)]);
   if (!ctl.alive()) return;
   const setP = (patch) => F.go('#/spending?' + new URLSearchParams(Object.entries({ ...p, _from: '', ...patch }).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString());
   const slots = d.cat_slots || {};
@@ -14,17 +15,21 @@ F.pages.spending = async (root, r, ctl) => {
   const rangeLabel = `${fmt.date(d.start, { year: true })} – ${fmt.date(d.end, { year: true })}`;
   const accounts = F.meta.accounts.filter((a) => !['ira', 'hsa', '401k', '403b', 'brokerage', '529'].includes(a.type));
   const totalBudget = d.budgets.reduce((s, b) => s + (b.monthly || 0), 0);
+  const persons = [...new Set([...F.people(), ...d.by_person.map((x) => x.name).filter(Boolean)])];
+  const personBars = d.by_person.length ? F.hbars(d.by_person.map((x) => ({ label: x.name || 'Not set', value: x.total, key: x.name || '__none__' })), { onClick: true, active: p.person, valueFmt: (v) => fmt.amt(v, { cents: false }), sub: (i) => (d.total ? fmt.pct(i.value / d.total, 0) : '') }) : F.empty('No spending in this range');
   const sel = (name, label, opts, cur) => html`<select class="input sm" data-p="${name}" aria-label="${label}"><option value="">${label}</option>${opts.map(([v, l]) => html`<option value="${v}" ${v === cur ? raw('selected') : ''}>${l}</option>`)}</select>`;
 
   F.setHTML(root, html`
     ${F.head({ title: 'Spending', lede: `${rangeLabel}. Card payments, transfers between our accounts and investment activity are left out; refunds reduce spending.`,
       actions: html`<a class="btn" href="#/settings?tab=categories">Categories</a><button type="button" class="btn primary" data-add-txn>${icon('plus')}Add a transaction</button>` })}
+    ${F.spendTabs('analysis', rv ? rv.counts.rows : 0)}
     <div class="filters">
       <span class="hide-sm">${F.presetSeg(p.preset)}</span><span class="show-sm">${F.presetSelect(p.preset, 'preset-sel')}</span>
       ${p.preset === 'custom' ? html`<input type="date" class="input sm" data-p="start" value="${d.start}" aria-label="From"><input type="date" class="input sm" data-p="end" value="${d.end}" aria-label="To">` : ''}
       ${sel('holder', 'Everyone', F.meta.holders.map((h) => [h, h === 'Business' ? 'Business cards & accounts' : h]), p.holder)}
       ${sel('entity', 'All entities', F.meta.entities.map((e) => [e, e]), p.entity)}
       ${sel('account', 'All accounts', accounts.map((a) => [a.account_id, a.name]), p.account)}
+      ${sel('person', 'Anyone', [...persons.map((x) => [x, x]), ['__none__', 'Not set']], p.person)}
     </div>
     <section class="band" style="--n:5" aria-label="Summary">
       ${F.kpi('Spent', F.kpiMoney(d.total), `${fmt.num(d.count)} transactions`)}
@@ -44,8 +49,11 @@ F.pages.spending = async (root, r, ctl) => {
         <tbody>${d.merchants.slice(0, window.matchMedia('(max-width: 760px)').matches ? 8 : 15).map((m) => html`<tr class="clickable" data-merchant="${m.merchant}" tabindex="0"><td><b>${m.merchant}</b><div class="tiny muted">Last ${fmt.date(m.last)}</div></td>
           <td class="hide-sm"><span class="row" style="gap:6px"><i class="dot" style="background:${raw(F.catVar(m.category))}"></i>${m.category}</span></td><td class="num" data-label="Visits">${m.n}</td><td class="num key">${fmt.amt(m.total, { cents: false })}</td></tr>`)}</tbody></table></div>
         ${d.merchants.length ? '' : F.empty('No spending in this range')}</div></section>
-      <section class="panel span-3"><div class="panel-head"><h2>By card holder</h2></div><div class="panel-body flush">${F.hbars(d.by_holder.map((x) => ({ label: x.name, value: x.total, key: x.name })), { onClick: true, active: p.holder, valueFmt: (v) => fmt.amt(v, { cents: false }) })}</div></section>
-      <section class="panel span-3"><div class="panel-head"><h2>By entity</h2></div><div class="panel-body flush" id="ent-bars">${F.hbars(d.by_entity.map((x) => ({ label: x.name, value: x.total, key: x.name })), { onClick: true, active: p.entity, valueFmt: (v) => fmt.amt(v, { cents: false }) })}</div></section>
+      <div class="span-6 stack" style="gap:28px">
+      <section class="panel" id="person-panel"><div class="panel-head"><h2>By person</h2><span class="sub">Who the money was spent on${d.split_lines ? ' · order items count for their own person' : ''}</span></div><div class="panel-body flush" id="person-bars">${personBars}</div></section>
+      <section class="panel"><div class="panel-head"><h2>By card holder</h2></div><div class="panel-body flush">${F.hbars(d.by_holder.map((x) => ({ label: x.name, value: x.total, key: x.name })), { onClick: true, active: p.holder, valueFmt: (v) => fmt.amt(v, { cents: false }) })}</div></section>
+      <section class="panel"><div class="panel-head"><h2>By entity</h2></div><div class="panel-body flush" id="ent-bars">${F.hbars(d.by_entity.map((x) => ({ label: x.name, value: x.total, key: x.name })), { onClick: true, active: p.entity, valueFmt: (v) => fmt.amt(v, { cents: false }) })}</div></section>
+      </div>
       <section class="span-12"><details class="disclosure" id="budgets" ${p.budgets === '1' ? raw('open') : ''}><summary>Monthly budgets <span class="badge">${totalBudget ? fmt.money(totalBudget, { cents: false }) + ' a month' : 'none set'}</span></summary>
         <p class="small ink2" style="margin:8px 0 4px">Type an amount to set a budget; the average month in this range is compared with it, and the category bars above mark it.</p>
         <div class="panel-body flush"><div class="table-wrap"><table class="t" id="budget-table"><thead><tr><th>Category</th><th class="num" style="width:150px">Monthly budget</th><th class="num">Average month</th><th style="width:30%" class="hide-sm">Average vs budget</th><th class="num">This range</th></tr></thead>
@@ -70,6 +78,7 @@ F.pages.spending = async (root, r, ctl) => {
     const parent = b.closest('section');
     b.onclick = () => {
       if (parent.querySelector('#ent-bars')) setP({ entity: p.entity === b.dataset.key ? '' : b.dataset.key });
+      else if (parent.querySelector('#person-bars')) setP({ person: p.person === b.dataset.key ? '' : b.dataset.key });
       else if (parent.querySelector('h2')?.textContent === 'By card holder') setP({ holder: p.holder === b.dataset.key ? '' : b.dataset.key });
     };
   });
@@ -110,7 +119,7 @@ F.pages.spending = async (root, r, ctl) => {
   $$('[data-merchant]', root).forEach((b) => { b.onclick = () => { table.set({ merchant: b.dataset.merchant }); $('#spend-txns', root).scrollIntoView({ behavior: 'smooth' }); }; b.onkeydown = (e) => { if (e.key === 'Enter') b.onclick(); }; });
 
   const table = F.txnTable($('#spend-txns', root), {
-    base: { holder: p.holder, entity: p.entity, account: p.account }, noPreset: true,
+    base: { holder: p.holder, entity: p.entity, account: p.account, person: p.person }, noPreset: true,
     state: { preset: 'custom', start: d.start, end: d.end, category: p.category, merchant: p.merchant, q: p.q || '', kind: p.kind || 'spending', subcategory: '' },
     title: 'Transactions', onEdit: F.debounce(() => {}, 10), pageSize: window.matchMedia('(max-width: 760px)').matches ? 40 : 100,
   });

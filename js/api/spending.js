@@ -287,23 +287,35 @@
       if (has(b, k)) f[k] = H.v_str(b[k], k, false, 120);
     }
     if (!Object.keys(f).length) throw new H.ApiError(400, 'Nothing to change');
+    // v3: 'manual' keeps the edit through the laptop's re-categorizing (cloud_sync pulls hand-edited items), and the
+    // charge's order split line for this item follows at once.
+    const cur = DB().row('SELECT tags FROM order_items WHERE order_id=? AND line_no=?', [oid, ln]);
+    if (cur) f.tags = H.add_tag(cur.tags, 'manual');
     await DB().update('order_items', { order_id: oid, line_no: ln }, f);
+    const sf = {};
+    for (const k of ['category', 'subcategory', 'entity', 'person']) if (has(f, k)) sf[k] = f[k];
+    if (Object.keys(sf).length && DB().one("SELECT COUNT(*) FROM transaction_splits WHERE order_id=? AND item_line=? AND source='order'", [oid, ln])) {
+      await DB().update('transaction_splits', { order_id: oid, item_line: ln, source: 'order' }, sf);
+    }
     return { ok: true };
   }
 
   // ---------------------------------------------------------------------------------------------- spending
+  /* Breakdowns run on spending LINES (H.spend_lines): a transaction split by an order or by hand counts as its split
+     lines, any other transaction as itself. Totals are unchanged (the transaction decides whether it is spending). */
   function api_spending(q) {
     const db = DB();
     const s = H.v_date(H.first(q, 'start'), 'start') || (H.data_start() || todayS());
     const e = H.v_date(H.first(q, 'end'), 'end') || todayS();
     if (s > e) throw new H.ApiError(400, 'start must be before end');
     const base_q = {};
-    for (const k of Object.keys(q || {})) if (k === 'holder' || k === 'entity' || k === 'account') base_q[k] = q[k];
+    for (const k of Object.keys(q || {})) if (k === 'holder' || k === 'entity' || k === 'account' || k === 'person') base_q[k] = q[k];
     const tw = (extra) => H.txn_where(Object.assign({}, base_q, extra));
-    const [w, args] = tw({ start: s, end: e, kind: 'spending' });
-    const where = w.join(' AND ');
-    const total = db.one(`SELECT COALESCE(-SUM(t.amount),0) ${J} WHERE ${where}`, args) || 0;
-    const count = db.one(`SELECT COUNT(*) ${J} WHERE ${where}`, args);
+    const lines = (extra) => H.spend_lines(Object.assign({}, base_q, extra));
+    const L = lines({ start: s, end: e, kind: 'spending' });
+    const LF = `FROM ${L.from} WHERE ${L.where}`, la = L.args;
+    const total = db.one(`SELECT COALESCE(-SUM(l.amount),0) ${LF}`, la) || 0;
+    const count = db.one(`SELECT COUNT(DISTINCT l.txn_id) ${LF}`, la);
     const ds = H.data_start() || s;
     const cov_s = smax(s, ds);
     const cov_e = smin(e, todayS());
@@ -312,17 +324,18 @@
     const length = daysBetween(s, e) + 1;
     const ps = addDays(s, -length);
     const pe = addDays(s, -1);
-    const [pw, pargs] = tw({ start: ps, end: pe, kind: 'spending' });
-    const prior = db.one(`SELECT COALESCE(-SUM(t.amount),0) ${J} WHERE ${pw.join(' AND ')}`, pargs) || 0;
+    const P = lines({ start: ps, end: pe, kind: 'spending' });
+    const PF = `FROM ${P.from} WHERE ${P.where}`;
+    const prior = db.one(`SELECT COALESCE(-SUM(l.amount),0) ${PF}`, P.args) || 0;
     const prior_cov = pe >= ds ? Math.max(0, daysBetween(smax(ps, ds), pe) + 1) : 0;
     const prior_ok = prior_cov >= 0.9 * length;
     const [iw, iargs] = tw({ start: s, end: e, kind: 'income' });
     const income = db.one(`SELECT COALESCE(SUM(t.amount),0) ${J} WHERE ${iw.join(' AND ')}`, iargs) || 0;
-    const cats = db.Q(`SELECT COALESCE(t.category,'Uncategorized') AS category, -SUM(t.amount) AS total, COUNT(*) AS n
-        ${J} WHERE ${where} GROUP BY 1 ORDER BY 2 DESC`, args);
+    const cats = db.Q(`SELECT COALESCE(l.category,'Uncategorized') AS category, -SUM(l.amount) AS total, COUNT(DISTINCT l.txn_id) AS n
+        ${LF} GROUP BY 1 ORDER BY 2 DESC`, la);
     const pcats = new Map();
-    for (const r of db.Q(`SELECT COALESCE(t.category,'Uncategorized') AS category, -SUM(t.amount) AS total
-        ${J} WHERE ${pw.join(' AND ')} GROUP BY 1`, pargs)) pcats.set(r.category, r.total);
+    for (const r of db.Q(`SELECT COALESCE(l.category,'Uncategorized') AS category, -SUM(l.amount) AS total
+        ${PF} GROUP BY 1`, P.args)) pcats.set(r.category, r.total);
     const budgets = new Map();
     for (const r of db.Q('SELECT * FROM budget')) budgets.set(r.category, r.monthly_amount);
     for (const c of cats) {
@@ -333,14 +346,14 @@
       c.avg_month = months_cov >= 1 ? H.r2(c.total / months_cov) : null;
     }
     const months = H.month_range(H.month_of(s), H.month_of(e));
-    const mrows = db.Q(`SELECT substr(t.posted_date,1,7) AS month, COALESCE(t.category,'Uncategorized') AS category, -SUM(t.amount) AS total
-        ${J} WHERE ${where} GROUP BY 1,2`, args);
+    const mrows = db.Q(`SELECT substr(l.posted_date,1,7) AS month, COALESCE(l.category,'Uncategorized') AS category, -SUM(l.amount) AS total
+        ${LF} GROUP BY 1,2`, la);
     const monthly = {};
     for (const m of months) monthly[m] = {};
     for (const r of mrows) (monthly[r.month] = monthly[r.month] || {})[r.category] = H.r2(r.total);
     const magg = new Map();
-    for (const r of db.Q(`SELECT merchant_of(t.description) AS merchant, COALESCE(t.category,'Uncategorized') AS category, -SUM(t.amount) AS total,
-            COUNT(*) AS n, MAX(t.posted_date) AS last ${J} WHERE ${where} GROUP BY 1,2`, args)) {
+    for (const r of db.Q(`SELECT merchant_of(l.description) AS merchant, COALESCE(l.category,'Uncategorized') AS category, -SUM(l.amount) AS total,
+            COUNT(DISTINCT l.txn_id) AS n, MAX(l.posted_date) AS last ${LF} GROUP BY 1,2`, la)) {
       let x = magg.get(r.merchant);
       if (!x) { x = { merchant: r.merchant, total: 0.0, n: 0, last: '', category: r.category, _best: -1e18 }; magg.set(r.merchant, x); }
       x.total += r.total;
@@ -348,24 +361,34 @@
       x.last = smax(x.last, r.last || '');
       if (r.total > x._best) { x._best = r.total; x.category = r.category; }
     }
+    // a split transaction appears under several categories: count it once per merchant
+    if (db.one(`SELECT COUNT(*) ${LF} AND l.split=1`, la)) {
+      for (const r of db.Q(`SELECT merchant_of(l.description) AS merchant, COUNT(DISTINCT l.txn_id) AS n ${LF} GROUP BY 1`, la)) {
+        if (magg.has(r.merchant)) magg.get(r.merchant).n = r.n;
+      }
+    }
     const merchants = [...magg.values()].sort((a, b) => b.total - a.total).slice(0, 25);
     for (const x of merchants) { delete x._best; x.total = H.r2(x.total); }
-    const by_holder = db.Q(`SELECT COALESCE(a.holder,'Unconfirmed') AS name, ROUND(-SUM(t.amount),2) AS total, COUNT(*) AS n ${J} WHERE ${where} GROUP BY 1 ORDER BY 2 DESC`, args);
-    const by_entity = db.Q(`SELECT COALESCE(t.entity,'household') AS name, ROUND(-SUM(t.amount),2) AS total, COUNT(*) AS n ${J} WHERE ${where} GROUP BY 1 ORDER BY 2 DESC`, args);
-    const by_account = db.Q(`SELECT t.account_id, COALESCE(a.display_name,a.name) AS name, ROUND(-SUM(t.amount),2) AS total, COUNT(*) AS n ${J} WHERE ${where} GROUP BY 1 ORDER BY 3 DESC`, args);
+    const by_holder = db.Q(`SELECT COALESCE(l.holder,'Unconfirmed') AS name, ROUND(-SUM(l.amount),2) AS total, COUNT(DISTINCT l.txn_id) AS n ${LF} GROUP BY 1 ORDER BY 2 DESC`, la);
+    const by_entity = db.Q(`SELECT COALESCE(l.entity,'household') AS name, ROUND(-SUM(l.amount),2) AS total, COUNT(DISTINCT l.txn_id) AS n ${LF} GROUP BY 1 ORDER BY 2 DESC`, la);
+    const by_account = db.Q(`SELECT l.account_id, l.account AS name, ROUND(-SUM(l.amount),2) AS total, COUNT(DISTINCT l.txn_id) AS n ${LF} GROUP BY 1 ORDER BY 3 DESC`, la);
+    // v3: who the money was spent on (transactions.person, or the person on each split line); null = not set
+    const by_person = db.Q(`SELECT l.person AS name, ROUND(-SUM(l.amount),2) AS total, COUNT(DISTINCT l.txn_id) AS n ${LF} GROUP BY 1 ORDER BY 2 DESC`, la);
     let detail = null;
     const cat = H.first(q, 'category');
     if (cat) {
-      const [cw, cargs] = tw({ start: s, end: e, kind: 'spending', category: cat });
-      const cwhere = cw.join(' AND ');
+      const C = lines({ start: s, end: e, kind: 'spending', category: cat });
+      const CF = `FROM ${C.from} WHERE ${C.where}`, ca = C.args;
       detail = {
         category: cat,
-        total: H.r2(db.one(`SELECT COALESCE(-SUM(t.amount),0) ${J} WHERE ${cwhere}`, cargs)),
-        subcategories: db.Q(`SELECT COALESCE(t.subcategory,'(none)') AS name, ROUND(-SUM(t.amount),2) AS total, COUNT(*) AS n
-                ${J} WHERE ${cwhere} GROUP BY 1 ORDER BY 2 DESC`, cargs),
-        merchants: db.Q(`SELECT merchant_of(t.description) AS merchant, ROUND(-SUM(t.amount),2) AS total, COUNT(*) AS n,
-                MAX(t.posted_date) AS last ${J} WHERE ${cwhere} GROUP BY 1 ORDER BY 2 DESC LIMIT 12`, cargs),
+        total: H.r2(db.one(`SELECT COALESCE(-SUM(l.amount),0) ${CF}`, ca)),
+        subcategories: db.Q(`SELECT COALESCE(l.subcategory,'(none)') AS name, ROUND(-SUM(l.amount),2) AS total, COUNT(DISTINCT l.txn_id) AS n
+                ${CF} GROUP BY 1 ORDER BY 2 DESC`, ca),
+        merchants: db.Q(`SELECT merchant_of(l.description) AS merchant, ROUND(-SUM(l.amount),2) AS total, COUNT(DISTINCT l.txn_id) AS n,
+                MAX(l.posted_date) AS last ${CF} GROUP BY 1 ORDER BY 2 DESC LIMIT 12`, ca),
         monthly: months.map((m) => ({ month: m, total: has(monthly[m] || {}, cat) ? monthly[m][cat] : 0 })),
+        // v3
+        by_person: db.Q(`SELECT l.person AS name, ROUND(-SUM(l.amount),2) AS total, COUNT(DISTINCT l.txn_id) AS n ${CF} GROUP BY 1 ORDER BY 2 DESC`, ca),
       };
     }
     const budget_rows = [];
@@ -383,7 +406,8 @@
       avg_month: months_cov >= 0.5 ? H.r2(total / months_cov) : null,
       prior: { start: ps, end: pe, total: H.r2(prior), ok: prior_ok },
       change: prior_ok && prior ? (total - prior) / prior : null, categories: cats, months, monthly,
-      merchants, by_holder, by_entity, by_account, detail, budgets: budget_rows, data_start: ds, cat_slots: H.cat_slots(),
+      merchants, by_holder, by_entity, by_account, by_person, detail, budgets: budget_rows, data_start: ds, cat_slots: H.cat_slots(),
+      split_lines: db.one(`SELECT COUNT(*) ${LF} AND l.split=1`, la),
     };
   }
 

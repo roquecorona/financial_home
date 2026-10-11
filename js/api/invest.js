@@ -78,7 +78,12 @@
     const allacc = H.linked_accounts(INVEST_IN);
     const types = (H.first(q, 'types') || '').split(',').filter((x) => x);
     const ids = (H.first(q, 'accounts') || '').split(',').filter((x) => x);
-    const sel = allacc.filter((a) => (!types.length || types.includes(a.type)) && (!ids.length || ids.includes(a.account_id)));
+    // v3 (documented divergence): kids' 529s are left out of the household figures unless asked for with kids529=1 or
+    // named by the type/account filter. They are summarized separately in `kids_529`.
+    const isKids = (a) => a.type === '529';
+    const askKids = H.first(q, 'kids529') === '1' || types.includes('529') || allacc.some((a) => isKids(a) && ids.includes(a.account_id));
+    const sel = allacc.filter((a) => (!types.length || types.includes(a.type)) && (!ids.length || ids.includes(a.account_id))
+      && (askKids || !isKids(a)));
     const s = H.v_date(H.first(q, 'start'), 'start') || '1900-01-01';
     const e = H.v_date(H.first(q, 'end'), 'end') || todayS();
     const eng = H.inv_engine(sel, s, e);
@@ -116,6 +121,12 @@
     contrib.t12_months_covered = round1(Math.min(12.0, cover_months));
     contrib.avg_month_employee = cover_months ? r2(((contrib.t12_employee || 0) + (contrib.t12_unspecified || 0)) / cover_months) : 0;
     contrib.avg_month_employer = cover_months ? r2((contrib.t12_employer || 0) / cover_months) : 0;
+    // v3: one-off lump sums (e.g. $130K of house-sale proceeds) would make the forecast assume that much every month.
+    const LUMP = 10000;
+    const lumps = allf.filter((f) => f[2] === 'contribution' && f[0] >= t12 && f[1] >= LUMP && f[3] !== 'employer');
+    contrib.lumps_t12 = lumps.map((f) => ({ date: f[0], amount: r2(f[1]) }));
+    contrib.avg_month_employee_regular = cover_months
+      ? r2(((contrib.t12_employee || 0) + (contrib.t12_unspecified || 0) - h().pysum(lumps.map((f) => f[1]))) / cover_months) : 0;
     const divs = { ytd: csum(ytd0, null, null, 'dividend'), period: csum(s_eff, e, null, 'dividend'), all: csum(null, null, null, 'dividend') };
     const fees = {
       ytd: r2(-(csum(ytd0, null, null, 'fee') || 0)), period: r2(-(csum(s_eff, e, null, 'fee') || 0)),
@@ -159,7 +170,48 @@
     Object.keys(by_class).map((k, i) => [k, by_class[k], i])
       .sort((x, y) => (y[1] - x[1]) || (x[2] - y[2]))
       .forEach(([k, v]) => { by_class_sorted[k] = r2(v); });
+    // v3: where each selected account's history starts. An account whose first valuation comes after the first month of
+    // the series makes the stacked chart step up; when no tracked account sent that money (a matching transfer out within
+    // a month), its earlier history is simply missing (e.g. the AWS 403(b) before it moved to Voya).
+    const history = {};
+    const m0 = rows.length ? rows[0].month : null;
+    const xfers = [];
+    const allFlows = H.inv_flows(allacc.map((a) => a.account_id));
+    for (const aid of Object.keys(allFlows)) for (const f of allFlows[aid]) if (f[2] === 'transfer' && f[1] < 0) xfers.push([aid, f[0], f[1]]);
+    for (const a of sel) {
+      const v = (eng.vals || {})[a.account_id] || [];
+      if (!v.length) continue;
+      const [fd, fv] = v[0];
+      const late = m0 !== null && H.month_of(fd) > m0 && Math.abs(fv) >= 1000;
+      let from = null;
+      if (late) {
+        const near = xfers.filter(([aid, d, amt]) => aid !== a.account_id && Math.abs(dnum(d) - dnum(fd)) <= 31
+          && Math.abs(-amt - fv) <= 0.1 * Math.abs(fv));
+        if (near.length) from = near[0][0];
+      }
+      history[a.account_id] = {
+        first_date: fd, first_value: r2(fv), last_date: v[v.length - 1][0], late_start: late,
+        continues_from: from, continues_from_label: from ? (allacc.find((x) => x.account_id === from) || {}).label || null : null,
+        missing_before: late && !from,
+      };
+    }
+    let kids_529 = null;
+    const kidsAccts = allacc.filter(isKids);
+    if (kidsAccts.length) {
+      const kf = H.inv_flows(kidsAccts.map((a) => a.account_id));
+      const ks = (aid, since) => r2(h().pysum((kf[aid] || []).filter((f) => f[2] === 'contribution' && (since === null || f[0] >= since)).map((f) => f[1])));
+      const list = kidsAccts.map((a) => ({
+        account_id: a.account_id, label: a.label, balance: a.balance, as_of: a.as_of, included_in_totals: a.included,
+        contributed_ytd: ks(a.account_id, ytd0), contributed_t12: ks(a.account_id, t12), contributed_all: ks(a.account_id, null),
+      }));
+      for (const k of list) k.growth = k.balance === null || k.balance === undefined ? null : r2(k.balance - k.contributed_all);
+      kids_529 = {
+        included: askKids, total: r2(h().pysum(list.map((k) => k.balance || 0))), accounts: list,
+        contributed_ytd: r2(h().pysum(list.map((k) => k.contributed_ytd))), contributed_all: r2(h().pysum(list.map((k) => k.contributed_all))),
+      };
+    }
     return {
+      kids_529, history,
       accounts: allacc, selected: sel.map((a) => a.account_id), start: s_eff, end: e, total_value: r2(total_value),
       stats, contributions: contrib, dividends: divs, fees, series,
       allocation: { by_class: by_class_sorted }, holdings,
@@ -267,6 +319,46 @@
 
   const LOAN_ACCTS_SQL = "SELECT account_id, COALESCE(display_name,name) AS name FROM accounts WHERE type IN ('mortgage','loan','heloc')";
 
+  // ---- v3 property additions (ownership share, a property's own bank account, owner distributions, sales).
+  // All additive: on a database without the new columns every property is 100% ours and nothing changes.
+  const NOT_PROPERTY_TAG = 'not-property-specific';
+  const PROPERTY_COLS = ['ownership_pct', 'sale_date', 'sale_price', 'sale_proceeds', 'value_as_of', 'value_source'];
+  // our share of a property (properties.ownership_pct is a percent; NULL / missing = 100%)
+  function property_share(p) {
+    const v = p ? p.ownership_pct : null;
+    return v === null || v === undefined || v === '' ? 1 : Number(v) / 100;
+  }
+  // our share of value and equity, plus the property's own bank accounts (entity = the property's, kept out of totals)
+  function property_extras(p) {
+    const H = h();
+    const share = property_share(p);
+    const ex = { share, our_value: p.est_value ? r2(p.est_value * share) : null,
+      our_equity: p.equity !== null && p.equity !== undefined ? r2(p.equity * share) : null };
+    ex.bank_accounts = p.entity ? H.linked_accounts('a.entity=? AND COALESCE(a.include_in_totals,1)=0', [p.entity])
+      .map((a) => ({ account_id: a.account_id, label: a.label, institution: a.institution, last4: a.last4, balance: a.balance, as_of: a.as_of })) : [];
+    ex.bank_balance = ex.bank_accounts.length ? r2(H.pysum(ex.bank_accounts.map((a) => a.balance || 0))) : null;
+    return ex;
+  }
+  // owner distributions paid out of the property's account: per partner per year (Transfer / Owner distribution)
+  function property_distributions(p) {
+    const ent = p.entity || p.name;
+    const rs = Q(`SELECT COALESCE(t.person,'Unassigned') AS person, substr(t.posted_date,1,4) AS year, -SUM(t.amount) AS amount,
+        COUNT(*) AS n, MAX(t.posted_date) AS last FROM transactions t WHERE t.entity=? AND t.subcategory='Owner distribution'
+        AND t.posted_date IS NOT NULL GROUP BY 1, 2 ORDER BY 2 DESC, 1`, [ent]);
+    const partners = [...new Set(rs.map((r) => r.person))].sort();
+    const years = [...new Set(rs.map((r) => r.year))].sort().reverse();
+    const rows = years.map((y) => {
+      const by = {};
+      for (const r of rs.filter((x) => x.year === y)) by[r.person] = r2(r.amount);
+      return { year: y, by, total: r2(Object.values(by).reduce((a, b) => a + b, 0)) };
+    });
+    const last = {};
+    for (const r of rs) if (!last[r.person] || r.last > last[r.person]) last[r.person] = r.last;
+    const total = {};
+    for (const r of rs) total[r.person] = r2((total[r.person] || 0) + r.amount);
+    return { partners, years, rows, last, total };
+  }
+
   function api_properties(q) {
     const H = h();
     const year = H.first(q, 'year') || todayS().slice(0, 4);
@@ -278,16 +370,23 @@
       [p.mortgage_balance, p.mortgage_as_of] = mortgage_balance(p);
       p.equity = p.est_value ? r2(p.est_value - (p.mortgage_balance || 0)) : null;
       p.note_count = one("SELECT COUNT(*) FROM notes WHERE target_type='property' AND target_id=?", [String(p.id)]);
+      if (property_share(p) !== 1 || db().columns('properties').includes('ownership_pct')) Object.assign(p, property_extras(p));
       out.push(p);
     }
-    const rentals = out.filter((p) => p.kind === 'rental' && p.status !== 'sold');
-    const sumk = (k) => r2(H.pysum(out.filter((p) => p.kind === 'rental').map((p) => p.kpis[k])));
+    // the rental-business band covers the rentals that are wholly ours; a co-owned property (ownership_pct < 100) has
+    // its own account and partners, so it is reported on its own page
+    const biz_props = out.filter((p) => p.kind === 'rental' && property_share(p) === 1);
+    const rentals = biz_props.filter((p) => p.status !== 'sold');
+    const sumk = (k) => r2(H.pysum(biz_props.map((p) => p.kpis[k])));
     const biz = { income: sumk('income'), expenses: sumk('expenses'), debt_service: sumk('debt_service') };
     biz.noi = r2(biz.income - biz.expenses);
     biz.cash_flow = r2(biz.noi - biz.debt_service);
     const [w, args] = H.txn_where({ start: `${year}-01-01`, end: `${year}-12-31`, entity: 'rental business' });
+    const notProp = `(',' || COALESCE(t.tags,'') || ',') LIKE '%,${NOT_PROPERTY_TAG},%'`;
     const unassigned = Q(`SELECT ${H.TXN_COLS} FROM transactions t JOIN accounts a USING(account_id) WHERE ${w.join(' AND ')} AND t.is_transfer=0
-        ORDER BY t.posted_date DESC LIMIT 60`, args);
+        AND NOT ${notProp} ORDER BY t.posted_date DESC LIMIT 60`, args);
+    const not_property = one(`SELECT COUNT(*) FROM transactions t JOIN accounts a USING(account_id) WHERE ${w.join(' AND ')} AND t.is_transfer=0
+        AND ${notProp}`, args);
     const ys = new Set([todayS().slice(0, 4)]);
     for (const r of Q('SELECT DISTINCT substr(month,1,4) AS y FROM property_ledger')) ys.add(r.y);
     for (const r of Q('SELECT DISTINCT substr(posted_date,1,4) AS y FROM transactions WHERE posted_date IS NOT NULL')) ys.add(r.y);
@@ -295,6 +394,8 @@
     return {
       properties: out, business: biz, year, years, rentals: rentals.length, unassigned,
       accounts: Q(LOAN_ACCTS_SQL),
+      ...(not_property ? { not_property } : {}),
+      ...(out.some((p) => property_share(p) !== 1) ? { co_owned: out.filter((p) => property_share(p) !== 1).map((p) => p.name) } : {}),
     };
   }
 
@@ -318,7 +419,18 @@
       if (lb.length) loan_hist.push({ name: 'Mortgage (sheet)', points: lb.map((r) => ({ date: H.month_end(r.month), balance: r.balance })) });
     }
     const notes = Q("SELECT * FROM notes WHERE target_type='property' AND target_id=? ORDER BY pinned DESC, created_at DESC", [String(pid)]);
-    return { property: p, pnl, year, loans: loan_hist, notes, accounts: Q(LOAN_ACCTS_SQL) };
+    const out = { property: p, pnl, year, loans: loan_hist, notes, accounts: Q(LOAN_ACCTS_SQL) };
+    Object.assign(p, property_extras(p));
+    if (p.bank_accounts.length) {
+      const ids = p.bank_accounts.map((a) => a.account_id);
+      const yw = year ? ' AND t.posted_date>=? AND t.posted_date<=?' : '';
+      out.bank_txns = Q(`SELECT ${H.TXN_COLS} FROM transactions t JOIN accounts a USING(account_id)
+          WHERE t.account_id IN (${ids.map(() => '?').join(',')})${yw} ORDER BY t.posted_date DESC, t.txn_id LIMIT 300`,
+      [...ids, ...(year ? [`${year}-01-01`, `${year}-12-31`] : [])]);
+    }
+    const dist = property_distributions(p);
+    if (dist.rows.length) out.distributions = dist;
+    return out;
   }
 
   // ---------------------------------------------------------------- writes
@@ -404,6 +516,18 @@
       entity: H.v_str(b.entity, 'entity', false, 120) || name, cash_invested: H.v_num(b.cash_invested, 'cash_invested', false, 0),
       kind: status === 'primary residence' ? 'primary' : 'rental',
     };
+    // v3 columns (ownership share, sale, value source): written only when sent and present in this database
+    const cols = db().columns('properties');
+    const has = (k) => Object.prototype.hasOwnProperty.call(b, k) && cols.includes(k);
+    if (has('ownership_pct')) {
+      const v = H.v_num(b.ownership_pct, 'ownership_pct', false, 0.01, 100);
+      vals.ownership_pct = v === null || v === 100 ? null : v;
+    }
+    if (has('sale_date')) vals.sale_date = H.v_date(b.sale_date, 'sale_date');
+    if (has('sale_price')) vals.sale_price = H.v_num(b.sale_price, 'sale_price', false, 0);
+    if (has('sale_proceeds')) vals.sale_proceeds = H.v_num(b.sale_proceeds, 'sale_proceeds', false, -1e9, 1e9);
+    if (has('value_source')) vals.value_source = H.v_str(b.value_source, 'value_source', false, 300);
+    if (has('value_as_of')) vals.value_as_of = H.v_date(b.value_as_of, 'value_as_of');
     let pid = H.v_int(b.id, 'id');
     if (pid) await db().update('properties', { id: pid }, vals);
     else {
@@ -438,7 +562,7 @@
   }
 
   // ---------------------------------------------------------------- registration
-  Object.assign(G.H, { latest_holdings, asset_class_of, property_pnl, mortgage_balance });
+  Object.assign(G.H, { latest_holdings, asset_class_of, property_pnl, mortgage_balance, property_share, property_extras, property_distributions });
   Object.assign(G.API.get, {
     '/api/investments': api_investments, '/api/properties': api_properties, '/api/property': api_property,
   });

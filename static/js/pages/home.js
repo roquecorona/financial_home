@@ -5,7 +5,8 @@ F.pages.home = async (root, r, ctl) => {
   const { html, raw, fmt, icon, $, $$ } = F;
   const today = F.todayISO();
   // Handlers run on the in-browser copy, so three calls cost a few milliseconds.
-  const [d, cd, bd] = await Promise.all([F.get('/api/home'), F.get('/api/cards').catch(() => null), F.get('/api/bills').catch(() => null)]);
+  const [d, cd, bd, rv] = await Promise.all([F.get('/api/home'), F.get('/api/cards').catch(() => null), F.get('/api/bills').catch(() => null),
+    F.get('/api/review', { summary: 1 }).catch(() => null)]);
   if (!ctl.alive()) return;
   const t = d.totals;
   const cs = cd ? F.cardSummary(cd) : null;
@@ -22,6 +23,11 @@ F.pages.home = async (root, r, ctl) => {
   const due = d.upcoming.filter((u) => !u.paid).sort((a, b) => (b.overdue - a.overdue) || String(a.date).localeCompare(String(b.date)));
   const dueShown = due.slice(0, 6);
   const alertIcon = { warning: 'alert', serious: 'alert', info: 'info' };
+  // Review inbox (Spending → Review): payments to people and rows waiting for a category or a property
+  const toReview = rv && rv.counts.rows ? rv.counts : null;
+  // the inbox covers the "needs a category" and "Zelle to review" alerts, so those two fold into it
+  const alerts = toReview ? d.alerts.filter((a) => a.kind !== 'uncategorized' && a.kind !== 'review') : d.alerts;
+  const nAttention = alerts.length + (toReview ? 1 : 0);
   const late = (n) => (n ? html`<span class="alert-text">${n} past due</span>` : '');
 
   F.setHTML(root, html`
@@ -47,8 +53,12 @@ F.pages.home = async (root, r, ctl) => {
       </section>
 
       <section class="span-5" aria-labelledby="att-h">
-        ${F.secHead('Needs attention', { id: 'att-h', sub: d.alerts.length ? `${d.alerts.length} item${d.alerts.length === 1 ? '' : 's'}` : '' })}
-        ${d.alerts.length ? html`<div class="list">${d.alerts.map((a) => html`${raw(a.txn_id ? `<button type="button" class="list-item" data-txn="${F.esc(a.txn_id)}">` : `<a class="list-item" href="${F.esc(a.link || '#/home')}">`)}
+        ${F.secHead('Needs attention', { id: 'att-h', sub: nAttention ? `${nAttention} item${nAttention === 1 ? '' : 's'}` : '' })}
+        ${nAttention ? html`<div class="list">${toReview ? html`<a class="list-item" href="#/spending?view=review" data-review-link>
+            <span class="alert-ico info">${icon('list')}</span>
+            <span class="main-col"><span class="title">${fmt.num(toReview.rows)} transaction${toReview.rows === 1 ? '' : 's'} to tag</span>
+            <span class="meta">${[toReview.people ? `${fmt.num(toReview.people)} paid to people` : '', toReview.property ? `${fmt.num(toReview.property)} rental, no property` : '', toReview.other ? `${fmt.num(toReview.other)} need a category` : ''].filter(Boolean).join(' · ')}</span></span>
+            <span class="badge alert">${fmt.num(toReview.rows)}</span></a>` : ''}${alerts.map((a) => html`${raw(a.txn_id ? `<button type="button" class="list-item" data-txn="${F.esc(a.txn_id)}">` : `<a class="list-item" href="${F.esc(a.link || '#/home')}">`)}
             <span class="alert-ico ${a.level}">${icon(alertIcon[a.level] || 'info')}</span>
             <span class="main-col"><span class="title">${a.title}</span><span class="meta">${a.detail}</span></span>${raw(a.txn_id ? '</button>' : '</a>')}`)}</div>`
         : F.empty('All clear', 'Nothing needs a look right now.')}

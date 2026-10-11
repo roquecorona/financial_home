@@ -675,6 +675,9 @@
 
   H.included = (a) => {
     if (a.include_in_totals !== null && a.include_in_totals !== undefined) return pybool(a.include_in_totals);
+    // v3 (documented divergence): kids' 529s are not household money, so they stay out of totals and net worth unless an
+    // account explicitly sets include_in_totals=1. Investments shows them in their own "Kids' 529s" block.
+    if (a.type === '529') return false;
     return !['shares_balance', 'closed'].includes(a.status);
   };
 
@@ -770,8 +773,16 @@
   // ------------------------------------------------------------------------------------------------------------------
   // investments engine
   // ------------------------------------------------------------------------------------------------------------------
+  // v3 (documented divergence from app.py): money moved between investment accounts (rollovers, ACAT/in-kind transfers,
+  // transfer-out distributions) is kind 'transfer': an external flow for the account's value and returns, but never a
+  // contribution or withdrawal, so a rollover isn't counted as saving. Bank deposits labelled "TRANSFER IN - funds received"
+  // are contributions (they were unclassified, so an $80K deposit read as market gain).
+  H.INV_TRANSFER_RE = /\brollover (in|distr|out)\b|\bacat\b|\bjournal(ed)?\b|transfer of assets|transfer out distr|\btransfer in\b(?!.*(funds received|deposit))/i;
+  H.INV_DEPOSIT_RE = /funds received|deposit from bank/i;
   H.classify_inv = (sub, desc, amt, atype) => {
     const d = (desc || '').toLowerCase();
+    if (H.INV_DEPOSIT_RE.test(d) && amt > 0) return ['contribution', 'unspecified'];
+    if (sub !== 'Dividend' && sub !== 'Fees' && H.INV_TRANSFER_RE.test(d) && amt) return ['transfer', amt > 0 ? 'in' : 'out'];
     if (sub === 'Contribution') {
       if (d.includes('co contr') || d.includes('employer') || d.includes('company')) return ['contribution', 'employer'];
       if (d.includes('partic') || d.includes('contribution') || d.includes('employee') || d.includes('deferral')) {
@@ -831,12 +842,14 @@
     return Array.from(pts.entries()).map(([d, [v, s]]) => [d, v, s]).sort(pycmp);
   };
 
+  // external flows move value in or out of an account (transfers included); dividends and fees are part of the gain
+  H.inv_is_ext = (f) => f[2] === 'contribution' || f[2] === 'withdrawal' || f[2] === 'transfer';
   // value at end of day d -> [value, valuation_date] or [null, null]
   H.inv_value_at = (vals, flows, d) => {
     const i = bisect_right(vals.map((v) => v[0]), d) - 1;
     if (i < 0) return [null, null];
     const [vd, vv] = vals[i];
-    const ext = pysum(flows.filter((f) => (f[2] === 'contribution' || f[2] === 'withdrawal') && vd < f[0] && f[0] <= d)
+    const ext = pysum(flows.filter((f) => H.inv_is_ext(f) && vd < f[0] && f[0] <= d)
       .map((f) => f[1]));
     return [vv + ext, vd];
   };
@@ -875,7 +888,7 @@
     const rows = [];
     let prev_total = 0.0;
     let prev_by = {};
-    const isExt = (f) => f[2] === 'contribution' || f[2] === 'withdrawal';
+    const isExt = H.inv_is_ext;
     for (const m of months) {
       const mend = H.month_end(m);
       const me = mend < end ? mend : end;
@@ -959,9 +972,13 @@
   // ------------------------------------------------------------------------------------------------------------------
   // shared transaction filtering
   // ------------------------------------------------------------------------------------------------------------------
+  // An account that belongs to a property rather than the household (accounts.entity = a property's entity and
+  // include_in_totals = 0, e.g. a co-owned property's checking) never counts as household spending or income.
+  H.NOT_PROPERTY_ACCT_SQL = `NOT (COALESCE(a.include_in_totals,1)=0 AND a.entity IN (SELECT entity FROM properties WHERE entity IS NOT NULL))`;
   H.SPEND_SQL = `t.is_transfer=0 AND COALESCE(t.category,'') NOT IN ('Income','Transfer','Investments')
-  AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529') AND t.pending=0`;
-  H.INCOME_SQL = `t.category='Income' AND t.is_transfer=0 AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529') AND t.pending=0`;
+  AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529') AND t.pending=0 AND ${H.NOT_PROPERTY_ACCT_SQL}`;
+  H.INCOME_SQL = `t.category='Income' AND t.is_transfer=0 AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529') AND t.pending=0
+  AND ${H.NOT_PROPERTY_ACCT_SQL}`;
   H.SORTS = {
     date: 't.posted_date', amount: 't.amount', description: 't.description', category: 't.category',
     account: 'a.name', merchant: 'merchant_of(t.description)',
@@ -994,12 +1011,16 @@
       const ids = String(acc).split(',').filter((x) => x).slice(0, 50);
       w.push(`t.account_id IN (${ids.map(() => '?').join(',')})`); args.push(...ids);
     }
+    // category / subcategory / person: a split transaction matches through any of its split lines (v3).
     const cat = first(q, 'category');
     if (cat === '__none__') w.push("(t.category IS NULL OR t.category='' OR t.category='Uncategorized')");
-    else if (pybool(cat)) { w.push('t.category=?'); args.push(cat); }
+    else if (pybool(cat)) { w.push(H.split_or('t.category=?', 's.category=?')); args.push(cat, cat); }
     const sub = first(q, 'subcategory');
     if (sub === '__none__') w.push("(t.subcategory IS NULL OR t.subcategory='')");
-    else if (pybool(sub)) { w.push('t.subcategory=?'); args.push(sub); }
+    else if (pybool(sub)) { w.push(H.split_or('t.subcategory=?', 's.subcategory=?')); args.push(sub, sub); }
+    const person = first(q, 'person');
+    if (person === '__none__') w.push(H.split_or('t.person IS NULL', 's.person IS NULL'));
+    else if (pybool(person)) { w.push(H.split_or('t.person=?', 's.person=?')); args.push(person, person); }
     const ent = first(q, 'entity');
     if (pybool(ent)) { w.push("COALESCE(t.entity,'household')=?"); args.push(ent); }
     const holder = first(q, 'holder');
@@ -1034,6 +1055,50 @@
     return [w, args];
   };
 
+  // ------------------------------------------------------------------------------------------------------------------
+  // splits and spending lines (v3)
+  // A transaction with rows in transaction_splits is analysed as those lines (category, subcategory, entity, person,
+  // amount); every other transaction is one line. Which transactions count (SPEND_SQL, dates, accounts, holder…) is
+  // always decided on the transaction itself, so totals are identical with or without splits.
+  // ------------------------------------------------------------------------------------------------------------------
+  H.split_or = (txnCond, splitCond) => `((NOT EXISTS (SELECT 1 FROM transaction_splits s WHERE s.txn_id=t.txn_id) AND ${txnCond})
+      OR EXISTS (SELECT 1 FROM transaction_splits s WHERE s.txn_id=t.txn_id AND ${splitCond}))`;
+  const LINE_KEYS = new Set(['category', 'subcategory', 'entity', 'person']);
+  /* H.spend_lines(q) -> { from, where, args }: use as `SELECT … FROM ${L.from} WHERE ${L.where}` with L.args.
+     q is a txn_where query (kind=spending etc.); category/subcategory/entity/person filter the lines, everything else the
+     transaction. Columns of l: txn_id, line (null when not split), split (0/1), account_id, account, holder, posted_date,
+     description, merchant, category, subcategory, entity, person, amount, txn_amount, source. */
+  H.spend_lines = (q) => {
+    const txq = {}, lq = {};
+    for (const k of Object.keys(q || {})) (LINE_KEYS.has(k) ? lq : txq)[k] = q[k];
+    const [w, args] = H.txn_where(txq);
+    const lw = [], largs = [];
+    const cat = H.first(lq, 'category');
+    if (cat === '__none__') lw.push("(l.category IS NULL OR l.category='' OR l.category='Uncategorized')");
+    else if (pybool(cat)) { lw.push('l.category=?'); largs.push(cat); }
+    const sub = H.first(lq, 'subcategory');
+    if (sub === '__none__') lw.push("(l.subcategory IS NULL OR l.subcategory='')");
+    else if (pybool(sub)) { lw.push('l.subcategory=?'); largs.push(sub); }
+    const ent = H.first(lq, 'entity');
+    if (pybool(ent)) { lw.push("COALESCE(l.entity,'household')=?"); largs.push(ent); }
+    const person = H.first(lq, 'person');
+    if (person === '__none__') lw.push('l.person IS NULL');
+    else if (pybool(person)) { lw.push('l.person=?'); largs.push(person); }
+    const from = `(SELECT t.txn_id, s.line, CASE WHEN s.txn_id IS NULL THEN 0 ELSE 1 END AS split, t.account_id,
+        COALESCE(a.display_name, a.name) AS account, a.holder, t.posted_date, t.description, t.merchant, t.source,
+        CASE WHEN s.txn_id IS NULL THEN t.category ELSE s.category END AS category,
+        CASE WHEN s.txn_id IS NULL THEN t.subcategory ELSE s.subcategory END AS subcategory,
+        CASE WHEN s.txn_id IS NULL THEN t.entity ELSE COALESCE(s.entity, t.entity) END AS entity,
+        CASE WHEN s.txn_id IS NULL THEN t.person ELSE COALESCE(s.person, t.person) END AS person,
+        CASE WHEN s.txn_id IS NULL THEN t.amount ELSE s.amount END AS amount, t.amount AS txn_amount
+      FROM transactions t JOIN accounts a USING(account_id) LEFT JOIN transaction_splits s ON s.txn_id=t.txn_id
+      WHERE ${w.join(' AND ')}) l`;
+    return { from, where: lw.length ? lw.join(' AND ') : '1=1', args: args.concat(largs) };
+  };
+  // Split lines of one transaction (with a friendly label for order items).
+  H.txn_splits = (tid) => H.Q(`SELECT s.*, i.title AS item_title FROM transaction_splits s
+      LEFT JOIN order_items i ON i.order_id=s.order_id AND i.line_no=s.item_line WHERE s.txn_id=? ORDER BY s.line`, [tid]);
+
   // category -> color slot (0..7); persists newly assigned slots (fire-and-forget: GET handlers are synchronous)
   H.cat_slots = () => {
     const raw = H.setting('cat_slots');
@@ -1043,9 +1108,10 @@
     } catch (e) {
       slots = {};
     }
-    const rank = H.rows(`SELECT t.category FROM transactions t JOIN accounts a USING(account_id)
-        WHERE ${H.SPEND_SQL} AND t.category IS NOT NULL AND t.category NOT IN ('Uncategorized','Other')
-        GROUP BY 1 ORDER BY -SUM(t.amount) DESC`).map((r) => r[0]);
+    const L = H.spend_lines({ kind: 'spending' });
+    const rank = H.rows(`SELECT l.category FROM ${L.from}
+        WHERE ${L.where} AND l.category IS NOT NULL AND l.category NOT IN ('Uncategorized','Other')
+        GROUP BY 1 ORDER BY -SUM(l.amount) DESC`, L.args).map((r) => r[0]);
     const used = new Set(Object.values(slots));
     let changed = false;
     for (const c of rank) {

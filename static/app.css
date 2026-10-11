@@ -725,6 +725,8 @@ a.prop:hover { color: inherit; }
 .linkish { border: 0; background: none; padding: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; text-align: left; max-width: 100%; }
 .linkish:hover { color: var(--accent); text-decoration: underline; }
 .list-item .assign { width: 190px; flex: none; }
+.list-item .np { flex: none; }
+.list-item .np-amt { min-width: 76px; text-align: right; margin-left: auto; }
 
 /* ---------- misc controls ---------- */
 details.pick { position: relative; }
@@ -994,3 +996,68 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; }
 /* Pay cards: one totals strip per screen size — the band on wide screens, the sticky bar on phones. */
 @media (min-width: 761px) { .paybar { display: none; } }
 @media (max-width: 760px) { #pay-band { display: none; } #pay-band + #by-from .from-line { padding-top: 4px; } }
+
+/* v3: promo APR periods on Pay cards (investments/cards agent) */
+button.pill { background: none; cursor: pointer; font-family: inherit; }
+.promo-box { margin: 16px 0 4px; }
+.promo-box:empty { display: none; }
+.promo-list .list-item { align-items: center; }
+.promo-list .list-item.promo-soon { box-shadow: inset 3px 0 0 var(--warn); padding-left: 10px; }
+
+/* ---------- Spending → Review inbox, split editor, item person (v3 splits/review) ---------- */
+.rv-filters .seg .badge { margin-left: 2px; }
+.rv-sum { margin: 14px 0 0; }
+.rv-cards { margin-top: 14px; border-top: 1px solid var(--line); }
+.rv-card { border-bottom: 1px solid var(--line); }
+.rv-head { display: flex; gap: 12px; align-items: flex-start; width: 100%; padding: 14px 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.rv-head:hover .rv-name { color: var(--accent); }
+.rv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.rv-name { font-weight: 700; font-size: 16px; overflow-wrap: anywhere; }
+.rv-meta { font-size: 13px; color: var(--ink-2); }
+.rv-acct { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+.rv-amt { font-weight: 700; font-variant-numeric: tabular-nums; font-size: 16px; }
+.rv-body:empty { display: none; }
+.rv-body { padding: 0 0 18px; }
+.rv-hint { display: flex; gap: 6px; align-items: flex-start; margin: 0 0 14px; }
+.rv-hint svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.8; flex: none; margin-top: 2px; }
+.rv-people { border: 0; padding: 0; margin: 0; }
+.rv-chip { position: relative; cursor: pointer; }
+.rv-chip input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.rv-chip:has(input:checked) { background: var(--ink); color: var(--page); border-color: var(--ink); }
+.rv-chip:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rv-always { align-items: flex-start; }
+.rv-always input { margin-top: 2px; }
+.rv-always.muted { color: var(--ink-2); }
+.rv-rows { margin-top: 16px; }
+.rv-rows summary { cursor: pointer; font-weight: 600; font-size: 14px; padding: 6px 0; }
+.rv-list { max-height: 320px; overflow-y: auto; border-top: 1px solid var(--line-2); margin-top: 6px; }
+.rv-row { display: grid; grid-template-columns: 20px 92px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line-2); cursor: pointer; }
+.rv-row input { width: 16px; height: 16px; accent-color: var(--ink); align-self: center; }
+.rv-row .d { color: var(--ink-2); font-size: 13px; }
+.rv-row .t { min-width: 0; display: flex; flex-direction: column; }
+.rv-row .m { font-size: 12px; color: var(--muted); }
+.rv-row .a { font-variant-numeric: tabular-nums; }
+.rv-actions { margin-top: 16px; gap: 8px; }
+.split-line { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1fr) 120px 36px; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-2); }
+.oi-tags { display: flex; gap: 6px; flex: none; }
+.oi-tags select { width: auto; max-width: 180px; }
+@media (max-width: 760px) {
+  .rv-filters .seg { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+  .rv-filters .seg button { justify-content: center; height: 40px; padding: 0 8px; white-space: normal; text-align: center; line-height: 1.15; }
+  .rv-filters .seg button:nth-child(odd) { border-left: 0; }
+  .rv-filters .seg button:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .rv-acct { white-space: normal; }
+  .rv-row { grid-template-columns: 20px minmax(0, 1fr) auto; }
+  .rv-row .d { grid-column: 2 / 4; grid-row: 1; }
+  .rv-row .t { grid-column: 2; grid-row: 2; }
+  .rv-row .a { grid-column: 3; grid-row: 2; }
+  .rv-actions .btn.primary { flex: 1 1 100%; justify-content: center; }
+  .split-line { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 36px; }
+  .split-line [data-f="subcategory"] { grid-column: 2; }
+  .split-line [data-f="person"] { grid-column: 1; }
+  .split-line .money-wrap { grid-column: 2; }
+  .split-line [data-rm] { grid-column: 3; grid-row: 1; }
+  .oi-tags { flex-direction: column; }
+}
+#split-left svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; vertical-align: -2px; margin-right: 4px; }

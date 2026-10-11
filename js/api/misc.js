@@ -329,10 +329,12 @@
       n = (await DB().update('transactions', match, patch)).length;
       await DB().update('category_rules', match, patch);
       await DB().update('order_items', match, patch);
+      await DB().update('transaction_splits', match, patch);  // v3
     } else {
       n = (await DB().update('transactions', { category: frm }, { category: to })).length;
       await DB().update('category_rules', { category: frm }, { category: to });
       await DB().update('order_items', { category: frm }, { category: to });
+      await DB().update('transaction_splits', { category: frm }, { category: to });  // v3
       await DB().update('bills', { category: frm }, { category: to });
       const old = H.row('SELECT monthly_amount FROM budget WHERE category=?', [frm]);
       if (old) {
@@ -392,6 +394,7 @@
       priority: H.v_int(b.priority, 'priority') || 100,
       active: b.active === false || b.active === 0 || b.active === '0' ? 0 : 1,
     };
+    if (has(b, 'person')) vals.person = H.v_str(b.person, 'person', false, 120);  // v3
     let rid = H.v_int(b.rule_id, 'rule_id');
     if (rid) {
       await DB().update('category_rules', { rule_id: rid }, vals);
@@ -440,7 +443,8 @@
               }
               const patch = { category: nw[0], subcategory: nw[1], entity: nw[2], tags,
                 is_transfer: nw[0] === 'Transfer' || nw[0] === 'Investments' ? 1 : 0 };
-              const key = JSON.stringify([patch.category, patch.subcategory, patch.entity, patch.tags, patch.is_transfer]);
+              if (r.person) patch.person = r.person;  // v3: category_rules.person
+              const key = JSON.stringify([patch.category, patch.subcategory, patch.entity, patch.tags, patch.is_transfer, patch.person]);
               if (!groups.has(key)) groups.set(key, { patch, ids: [] });
               groups.get(key).ids.push(t.txn_id);
             }

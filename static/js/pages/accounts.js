@@ -38,6 +38,7 @@
     const nwTop = (d.networth || []).filter((x) => x.complete).length >= 2;
     const nwSec = html`<section class="span-12" aria-labelledby="nw-h">${F.secHead('Net worth by month', { id: 'nw-h', tools: nwTop ? html`<div class="seg sm" id="nw-range" role="group" aria-label="Range">${['6m', '1y', '3y', 'all'].map((k) => html`<button type="button" data-r="${k}" aria-pressed="${String(k === nwRange())}">${k === 'all' ? 'All' : k.toUpperCase()}</button>`)}</div>` : '' })}
           <div class="chart h-220" id="nw-chart"></div><div id="nw-note"></div></section>`;
+    const kids = d.accounts.filter((a) => a.type === '529' && !a.included && a.status !== 'closed');
     F.setHTML(root, html`
       ${F.head({ title: 'Accounts', lede: `${d.accounts.length} linked through the bank sync, ${d.manual.filter((m) => m.status !== 'closed').length} tracked by hand. Card balances shared between two cards are counted once.`,
         actions: html`<button type="button" class="btn primary" data-add-acct>${icon('plus')}Track an account by hand</button>` })}
@@ -48,6 +49,7 @@
         ${F.kpi('Loans', F.kpiMoney(-t.loans), 'Mortgages and loans')}
         ${F.kpi('Net worth', F.kpiMoney(t.net_worth), t.real_estate ? 'Includes home estimates' : 'Home values not included')}
       </section>
+      ${kids.length ? html`<p class="small ink2" style="margin:10px 0 0">Kids’ 529s: <b class="num">${fmt.amt(kids.reduce((s, a) => s + (a.balance || 0), 0), { cents: false })}</b> (${kids.map((a) => `${a.label.replace(/^Fidelity 529 - /, '')} ${fmt.amt(a.balance, { cents: false })}`).join(' · ')}) — kept out of Invested and net worth. <a href="#/investments">See them on Investments</a></p>` : ''}
       <div class="grid">
         ${nwTop ? nwSec : ''}
         ${GROUPS.map(([g, label, sub]) => {

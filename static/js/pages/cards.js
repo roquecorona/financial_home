@@ -10,6 +10,7 @@ F.pages.cards = async (root, r, ctl) => {
   const pref = (k, def) => { try { return localStorage.getItem('fin.cards.' + k) ?? def; } catch { return def; } };
   const setPref = (k, v) => { try { localStorage.setItem('fin.cards.' + k, v); } catch { /* ignore */ } };
   let showHidden = r.params.hidden === '1';
+  let promoOpen = r.params.promo === '1';
   let zeroOpen = false;
   let owner = pref('owner', 'all');
   let sortBy = pref('sort', 'due');
@@ -84,6 +85,55 @@ F.pages.cards = async (root, r, ctl) => {
   const fillBtn = (label, v, key) => (v !== null && v !== undefined && v > 0 ? html`<button type="button" data-fill-v="${v}" data-fill-k="${key}" aria-label="Plan ${label.toLowerCase()} ${fmt.money(v)}">${label} <span class="num">${fmt.amt(v, { cents: v < 1000 })}</span></button>` : '');
   // One-tap fills: statement, minimum, full balance, and last month's plan when there was one.
   const fills = (c) => html`${fillBtn('Stmt', num(c.statement_due), 'statement')}${fillBtn('Min', num(c.min_due), 'minimum')}${fillBtn('Full', (c.owed || 0) > 0 ? Math.round(c.owed * 100) / 100 : null, 'full')}${num(c.prev_planned) !== num(c.statement_due) ? fillBtn('Last mo.', num(c.prev_planned), 'like last month') : ''}`;
+  // ---------- promotional (0%) APR periods ----------
+  const rateLbl = (p) => `${p.rate !== null && p.rate !== undefined ? +p.rate : 0}%`;
+  const daysLbl = (p) => (p.ended ? 'ended' : p.days_left === 0 ? 'ends today' : `${p.days_left} day${p.days_left === 1 ? '' : 's'} left`);
+  const promoPill = (c) => (c.promo && c.promo.balance > 0.005 ? html`<button type="button" class="pill ${c.promo.ended ? 'crit' : c.promo.soon ? 'warn' : 'neutral'}" data-promo title="${rateLbl(c.promo)} APR until ${fmt.date(c.promo.end, { long: true })}">${rateLbl(c.promo)} to ${fmt.date(c.promo.end, { year: true })} · ${c.promo.ended ? 'ended' : `${c.promo.days_left}d`}</button>` : '');
+  const drawPromos = () => {
+    const list = cards.filter((c) => c.promo && ownerOk(c) && (showHidden || !c.hidden)).sort((a, b) => a.promo.end.localeCompare(b.promo.end));
+    const box = $('#promo-box', root); if (!box) return;
+    const others = cards.filter((c) => !c.promo && !c.hidden);
+    const live = list.filter((c) => c.promo.balance > 0.005);
+    const urgent = live.filter((c) => c.promo.soon || c.promo.ended);
+    const next = live[0];
+    // Folded unless one ends within 60 days (or Home's alert linked here), so the card rows stay near the top.
+    F.setHTML(box, list.length ? html`<details class="disclosure promo-det" ${urgent.length || promoOpen ? raw('open') : ''}><summary>0% promo periods <span class="badge">${list.length}</span>
+        ${next ? html`<span class="small ${urgent.length ? 'alert-text' : 'muted'}" style="margin-left:8px">${urgent.length ? `${urgent.length} ending within 60 days` : `next ends ${fmt.date(next.promo.end, { year: true })} · ${daysLbl(next.promo)}`}</span>` : ''}</summary>
+      <div class="list promo-list">${list.map((c) => {
+        const p = c.promo, planned = +c.planned || 0, short = c.planned !== null && c.planned !== undefined && c.planned !== '' && !c.paid && p.balance > 0.005 && !p.ended && planned + 0.005 < p.monthly_needed;
+        return html`<div class="list-item ${p.balance > 0.005 && (p.soon || p.ended) ? 'promo-soon' : ''}" data-key="${c.card_key}">
+          <div class="main-col"><div class="title">${c.name}${c.last4 ? html` <span class="muted small">••${c.last4}</span>` : ''}</div>
+            <div class="meta"><span class="${p.balance > 0.005 && (p.soon || p.ended) ? 'alert-text' : ''}"><b>${rateLbl(p)} until ${fmt.date(p.end, { year: true })}</b> · ${daysLbl(p)}</span>${p.note ? html` · ${p.note}` : ''}</div>
+            ${p.balance > 0.005 ? html`<div class="meta">${fmt.money(p.balance)} ${p.balance_is_whole ? 'owed' : 'on the promo'}${p.ended ? '' : html` → <b>${fmt.money(p.monthly_needed)}</b> a month for ${p.months_left} month${p.months_left === 1 ? '' : 's'} clears it`}${short ? html` · <span class="alert-text">planned ${fmt.money(planned, { cents: false })} this month</span>` : ''}</div>` : html`<div class="meta">Paid off</div>`}</div>
+          <button type="button" class="btn sm ghost" data-promo-edit="${c.card_key}">Edit</button></div>`;
+      })}</div><div class="row" style="justify-content:flex-end;padding:6px 0"><button type="button" class="btn sm ghost" data-promo-add>${icon('plus')}Add a promo period</button></div></details>` : html`<div class="row" style="justify-content:flex-end"><button type="button" class="btn sm ghost" data-promo-add>${icon('plus')}Add a 0% promo period</button></div>`);
+    $$('[data-promo-edit]', box).forEach((b) => (b.onclick = () => promoModal(byKey[b.dataset.promoEdit])));
+    const det = $('details', box); if (det) det.ontoggle = () => { promoOpen = det.open; };
+    $$('[data-promo-add]', box).forEach((b) => (b.onclick = () => promoModal(null, others)));
+  };
+  const promoModal = (c, choices) => F.modal({
+    title: c ? `Promo APR · ${c.name}` : 'Add a 0% promo period',
+    sub: 'From the statement’s interest section (“promotional rate end date”, “expires with statement”, or the promotional purchase summary).',
+    body: html`<div class="form-grid">
+      ${c ? '' : html`<div class="field full"><label for="pm-card">Card</label><select class="input" id="pm-card" name="card_key">${(choices || []).map((x) => html`<option value="${x.card_key}">${x.name}${x.last4 ? ' ••' + x.last4 : ''}</option>`)}</select></div>`}
+      <div class="field"><label for="pm-end">Promo ends</label><input class="input" type="date" id="pm-end" name="promo_apr_end" value="${c && c.promo ? c.promo.end : ''}" required></div>
+      <div class="field"><label for="pm-rate">Promo APR %</label><input class="input num" id="pm-rate" name="promo_rate" inputmode="decimal" value="${c && c.promo && c.promo.rate !== null ? c.promo.rate : '0'}"></div>
+      <div class="field full"><label for="pm-bal">Balance on the promo</label><span class="money-wrap"><input class="input" id="pm-bal" name="promo_balance" inputmode="decimal" value="${c && c.promo && !c.promo.balance_is_whole ? c.promo.balance : ''}" placeholder="Leave blank for the whole balance"></span><span class="hint">Blank uses the card’s current balance, so it stays up to date</span></div>
+      <div class="field full"><label for="pm-note">Note</label><input class="input" id="pm-note" name="promo_note" maxlength="200" value="${c && c.promo ? c.promo.note || '' : ''}" placeholder="e.g. Deferred interest — 31.99% back-charged if not paid by then"></div></div>`,
+    danger: c && c.promo ? { label: 'Remove', onClick: async () => {
+      await F.post('/api/card_settings', { card_key: c.card_key, promo_apr_end: null, promo_balance: null, promo_rate: null, promo_note: null });
+      F.toast('Promo removed'); F.refresh(); return true;
+    } } : null,
+    onSubmit: async (v) => {
+      if (!v.promo_apr_end) { F.toast('Enter the date the promo ends', { kind: 'error' }); return false; }
+      const bal = v.promo_balance.trim() === '' ? null : F.parseAmt(v.promo_balance);
+      const rate = v.promo_rate.trim() === '' ? null : parseFloat(v.promo_rate.replace('%', ''));
+      if (Number.isNaN(bal) || Number.isNaN(rate)) { F.toast('Balance and APR must be numbers', { kind: 'error' }); return false; }
+      await F.post('/api/card_settings', { card_key: c ? c.card_key : v.card_key, promo_apr_end: v.promo_apr_end, promo_balance: bal, promo_rate: rate, promo_note: v.promo_note });
+      F.toast('Promo saved'); F.refresh();
+    },
+  });
+
   const row = (c) => {
     const util = c.credit_limit && c.owed > 0 ? Math.min(1, c.owed / c.credit_limit) : null;
     const od = overdue(c);
@@ -92,7 +142,7 @@ F.pages.cards = async (root, r, ctl) => {
       <div class="c-dd"><span class="dnum ${od ? 'overdue' : c.due_date === today ? 'today' : ''}" title="${c.due_date ? 'Due ' + fmt.date(c.due_date, { long: true }) : 'No due date'}">${c.due_date ? fmt.date(c.due_date) : '—'}</span></div>
       <div class="name"><b>${c.linked ? html`<a href="#/accounts/${encodeURIComponent(c.account_id)}">${c.name}</a>` : c.name}</b>
         <div class="meta"><span>${short(c.holder) || ''}${c.last4 ? ' ••' + c.last4 : ''}</span>${od ? html`<span class="pill crit">Past due</span>` : ''}${!c.linked ? html`<span class="pill neutral" title="Not connected to the bank sync">Sheet</span>` : ''}${c.autopay ? html`<span class="pill info">Autopay</span>` : ''}
-          ${c.auto_paid && !c.paid ? html`<span class="pill good" title="Payments this month cover the plan">${icon('check')}Payment seen</span>` : ''}<span class="saved-flag" data-saved="${c.card_key}" aria-live="polite"></span></div>
+          ${c.auto_paid && !c.paid ? html`<span class="pill good" title="Payments this month cover the plan">${icon('check')}Payment seen</span>` : ''}${promoPill(c)}<span class="saved-flag" data-saved="${c.card_key}" aria-live="polite"></span></div>
         ${util !== null ? html`<div class="util ${util > 0.3 ? 'hi' : ''}" title="${fmt.pct(util, 0)} of ${fmt.money(c.credit_limit, { cents: false })} limit"><i style="width:${(util * 100).toFixed(1)}%"></i></div>` : ''}</div>
       <div class="owed"><span class="cell-label">Owed</span><span class="num">${fmt.amt(c.owed)}</span><small>${c.linked ? (c.owed_asof ? fmt.ago(c.owed_asof) : '') : (c.owed_asof || '').replace('sheet ', 'sheet · ')}${c.paid_this_month ? ` · paid ${fmt.amt(c.paid_this_month, { cents: false })}` : ''}</small></div>
       <div class="c-stmt"><label class="cell-label" for="st-${c.card_key}">Statement</label><span class="money-wrap"><input class="input sm" id="st-${c.card_key}" data-f="statement_due" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${c.statement_due ?? ''}" aria-label="Statement balance, ${c.name}"></span></div>
@@ -106,6 +156,7 @@ F.pages.cards = async (root, r, ctl) => {
       <div class="c-extra">
         <div class="c-due"><label class="cell-label" for="dd-${c.card_key}">Due date this month</label><input class="input sm" type="date" id="dd-${c.card_key}" data-f="due_date" value="${c.due_date || ''}"></div>
         <div class="c-set"><span class="cell-label">Card defaults</span><button type="button" class="btn sm" data-gear>${icon('settings')}Due day, limit, autopay…</button></div>
+        <div class="c-set"><span class="cell-label">Promo APR</span><button type="button" class="btn sm" data-promo>${c.promo ? `${rateLbl(c.promo)} until ${fmt.date(c.promo.end, { year: true })}…` : 'Add a 0% period…'}</button></div>
         ${c.payments.length ? html`<div class="c-pays"><span class="cell-label">Payments seen this month</span>${c.payments.map((p) => html`<button type="button" class="linkbtn" data-txn="${p.txn_id}">${fmt.date(p.posted_date)} · ${fmt.amt(p.amount)}</button>`)}</div>` : ''}
       </div>
     </div>`;
@@ -176,6 +227,7 @@ F.pages.cards = async (root, r, ctl) => {
         open ? openRows.add(c.card_key) : openRows.delete(c.card_key);
       };
       $('[data-gear]', rowEl).onclick = () => cardSettings(c);
+      $$('[data-promo]', rowEl).forEach((b) => (b.onclick = () => promoModal(c)));
       $$('[data-txn]', rowEl).forEach((b) => (b.onclick = () => F.openTxn(b.dataset.txn)));
     });
     const det = $('#pay-rows details', root); if (det) det.ontoggle = () => { zeroOpen = det.open; };
@@ -215,14 +267,17 @@ F.pages.cards = async (root, r, ctl) => {
       <div class="seg" role="group" aria-label="Sort"><button type="button" data-sort="due" aria-pressed="${String(sortBy === 'due')}">By due date</button><button type="button" data-sort="owed" aria-pressed="${String(sortBy === 'owed')}">By owed</button></div>
       <label class="check small"><input type="checkbox" data-hide-paid ${hidePaid ? raw('checked') : ''}> Hide paid</label>
     </div>
+    <section id="promo-box" class="promo-box" aria-label="Promo APR periods"></section>
     <section id="pay-rows" aria-label="Cards"></section>
     <div class="paybar" id="paybar" aria-live="polite"></div>
     <section class="month-notes">${F.secHead(`Notes for ${fmt.month(month)}`, { sub: 'Shared with the Notes page' })}<div id="month-notes"></div></section>`);
   drawTotals();
   draw();
+  drawPromos();
+  if (r.params.promo === '1') requestAnimationFrame(() => { const pb = $('#promo-box', root); if (pb) pb.scrollIntoView({ block: 'start' }); });
   F.bindMonthNav(root, (m) => F.go(`#/cards?month=${m}`));
   F.notesBlock($('#month-notes', root), 'month', month, d.notes, { placeholder: 'e.g. Paying Hyatt Business in two parts this month' });
-  $$('[data-owner]', root).forEach((b) => (b.onclick = () => { owner = b.dataset.owner; setPref('owner', owner); $$('[data-owner]', root).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); draw(); drawTotals(); }));
+  $$('[data-owner]', root).forEach((b) => (b.onclick = () => { owner = b.dataset.owner; setPref('owner', owner); $$('[data-owner]', root).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); draw(); drawTotals(); drawPromos(); }));
   $$('[data-sort]', root).forEach((b) => (b.onclick = () => { sortBy = b.dataset.sort; setPref('sort', sortBy); $$('[data-sort]', root).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); draw(); }));
   $('[data-hide-paid]', root).onchange = (e) => { hidePaid = e.target.checked; setPref('hidePaid', hidePaid ? '1' : '0'); draw(); };
   $('[data-fill-all]', root).onclick = async (e) => {

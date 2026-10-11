@@ -162,6 +162,22 @@
     return db;
   }
 
+  // A local file older than SQLITE_SCHEMA (e.g. the test snapshot) gets the tables and columns added since, empty.
+  function ensureSchema(db) {
+    const ref = emptyDb(DB._SQL);
+    try {
+      const names = (d) => { const r = d.exec("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"); return r.length ? r[0].values : []; };
+      const have = new Map(names(db));
+      for (const [t, sql] of names(ref)) {
+        if (!have.has(t)) { db.exec(sql); continue; }
+        const cols = (d) => { const r = d.exec(`PRAGMA table_info(${qi(t)})`); return r.length ? r[0].values : []; };
+        const got = new Set(cols(db).map((c) => c[1]));
+        for (const c of cols(ref)) if (!got.has(c[1])) db.exec(`ALTER TABLE ${qi(t)} ADD COLUMN ${qi(c[1])} ${c[2] || ''}`);
+      }
+    } finally { ref.close(); }
+    return db;
+  }
+
   /* ------------------------------------------------------------------ IndexedDB cache (per user email) */
   function idb() {
     return new Promise((resolve, reject) => {
@@ -330,7 +346,7 @@
         if (!r.ok) throw new Error(`Could not load ${opts.url} (${r.status})`);
         bytes = new Uint8Array(await r.arrayBuffer());
       }
-      adopt(bytes ? new SQL.Database(new Uint8Array(bytes)) : emptyDb(SQL));
+      adopt(bytes ? ensureSchema(new SQL.Database(new Uint8Array(bytes))) : emptyDb(SQL));
       DB.loadedAt = new Date().toISOString();
       DB.ready = true;
       emit('ready');

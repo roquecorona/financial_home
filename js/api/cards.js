@@ -57,6 +57,41 @@
     return a.account_id;
   }
 
+  // v3: a card's promotional (usually 0%) APR period from card_settings.promo_* (cloud-owned, edited on Pay cards).
+  // promo_balance null = the whole current balance is on the promo. monthly_needed clears it in equal payments by the end.
+  function promo_info(st, owed) {
+    const H = _H();
+    const end = g(st, 'promo_apr_end');
+    if (!pyt(end)) return null;
+    const days_left = H.days_between(H.today_s(), end);
+    const whole = g(st, 'promo_balance') === null;
+    const bal = Math.max(0, whole ? por(owed, 0) : st.promo_balance);
+    const months_left = days_left > 0 ? Math.max(1, Math.floor(days_left / 30.4375)) : 0;
+    return {
+      end, days_left, months_left, balance: H.r2(bal), balance_is_whole: whole, rate: g(st, 'promo_rate'), note: g(st, 'promo_note'),
+      monthly_needed: bal > 0.005 ? H.r2(months_left ? bal / months_left : bal) : 0, soon: days_left <= 60, ended: days_left < 0,
+    };
+  }
+
+  // Home "Needs attention": promos ending within 45 days that still carry a balance.
+  const money = (x) => Math.round(x).toLocaleString('en-US');
+  function promo_alerts() {
+    const H = _H();
+    const out = [];
+    for (const c of cards_for_month(H.this_month())) {
+      const p = c.promo;
+      if (!p || c.hidden || p.balance <= 0.005 || p.days_left > 45) continue;
+      const rate = pyt(p.rate) ? `${p.rate}%` : '0%';
+      out.push({
+        level: p.days_left <= 14 ? 'serious' : 'warning', kind: 'promo',
+        title: p.ended ? `${rate} promo on ${c.name} has ended` : `${rate} promo on ${c.name} ends in ${p.days_left} day${p.days_left === 1 ? '' : 's'}`,
+        detail: `$${money(p.balance)} still on it${p.ended ? '' : ` · about $${money(Math.ceil(p.monthly_needed))} a month clears it by ${p.end.slice(5, 7)}.${p.end.slice(8, 10)}.${p.end.slice(0, 4)}`}`,
+        link: '#/cards?promo=1',
+      });
+    }
+    return out;
+  }
+
   function cards_for_month(m) {
     const H = _H(), DB = _DB();
     const plan = new Map();
@@ -106,6 +141,7 @@
         credit_limit: por(g(st, 'credit_limit'), g(sh, 'credit_limit')), autopay: pyt(g(st, 'autopay')), hidden: pyt(g(st, 'hidden')),
         updated_by: g(p, 'updated_by'), updated_at: g(p, 'updated_at'), paid_this_month: H.r2(sum(paid_txns.map((x) => x.amount))),
         payments: paid_txns, shares_balance: a.status === 'shares_balance', sheet_card: g(sh, 'card'),
+        promo: promo_info(st, a.status === 'shares_balance' ? 0 : -(por(a.balance, 0))), // v3
       };
       const target = por(row.planned, row.statement_due);
       row.auto_paid = pyt(target) && pyt(row.paid_this_month) && row.paid_this_month >= 0.95 * target;
@@ -135,6 +171,7 @@
         note: g(p, 'note'), credit_limit: por(g(st, 'credit_limit'), g(r, 'credit_limit')), autopay: pyt(g(st, 'autopay')),
         hidden: pyt(g(st, 'hidden')), updated_by: g(p, 'updated_by'), updated_at: g(p, 'updated_at'), paid_this_month: null,
         payments: [], shares_balance: false, sheet_card: g(r, 'card'), sheet_month: g(r, 'month'), auto_paid: false,
+        promo: promo_info(st, owed), // v3
       });
     }
     const k2 = (c) => (por(c.owed, 0) > 0.005 ? -por(c.owed, 0) : 1);
@@ -335,10 +372,17 @@
     for (const k of ['autopay', 'hidden']) {
       if (has(b, k)) cur[k] = pyt(g(b, k)) ? 1 : 0;
     }
+    // v3: promotional APR period (only written when sent or already stored, so app.py-shaped calls are unchanged)
+    const promo = {};
+    if (has(b, 'promo_apr_end')) promo.promo_apr_end = H.v_date(g(b, 'promo_apr_end'), 'promo_apr_end');
+    if (has(b, 'promo_balance')) promo.promo_balance = H.v_num(g(b, 'promo_balance'), 'promo_balance', false, 0);
+    if (has(b, 'promo_rate')) promo.promo_rate = H.v_num(g(b, 'promo_rate'), 'promo_rate', false, 0, 100);
+    if (has(b, 'promo_note')) promo.promo_note = H.v_str(g(b, 'promo_note'), 'promo_note', false, 200);
+    for (const k of ['promo_apr_end', 'promo_balance', 'promo_rate', 'promo_note']) if (!has(promo, k) && has(cur, k)) promo[k] = cur[k];
     await DB.upsert('card_settings', {
       card_key: key, display_name: g(cur, 'display_name'), due_day: g(cur, 'due_day'), pay_from: g(cur, 'pay_from'),
       credit_limit: g(cur, 'credit_limit'), autopay: por(g(cur, 'autopay'), 0), hidden: por(g(cur, 'hidden'), 0),
-      updated_by: DB.user, updated_at: H.now_s(),
+      updated_by: DB.user, updated_at: H.now_s(), ...promo,
     }, ['card_key']);
     return { ok: true };
   }
@@ -527,7 +571,7 @@
 
   // ---- registration ------------------------------------------------------------------------------------------------
   const Hh = _H();
-  Object.assign(Hh, { card_key_for, cards_for_month, bill_suggestions });
+  Object.assign(Hh, { card_key_for, cards_for_month, bill_suggestions, promo_info, promo_alerts });
   const A = _API();
   Object.assign(A.get, { '/api/cards': api_cards, '/api/bills': api_bills });
   Object.assign(A.post, {

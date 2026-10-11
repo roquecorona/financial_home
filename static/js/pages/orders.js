@@ -18,6 +18,7 @@ F.pages.orders = async (root, r, ctl) => {
   const byId = Object.fromEntries(d.orders.map((o) => [o.order_id, o]));
   const shownCount = () => Object.keys(byId).length;
   const filteredN = d.counts.filtered ?? d.orders.length;
+  const people = F.people();
 
   /* The body of an order is rendered when it is opened — 300 orders × items × category menus would be slow on a phone. */
   const orderBody = (o) => html`<div class="order-body grid">
@@ -25,7 +26,8 @@ F.pages.orders = async (root, r, ctl) => {
         ${o.items.map((it) => html`<div class="order-item">
           <div class="oi-main">${it.product_url ? html`<a href="${it.product_url}" target="_blank" rel="noopener noreferrer">${it.title}<span class="sr-only"> (opens ${fmt.label(o.retailer)})</span></a>` : it.title}
             <div class="tiny muted">${it.quantity && it.quantity !== 1 ? `${fmt.num(it.quantity)} × ` : ''}${it.unit_price !== null && it.unit_price !== undefined ? fmt.amt(it.unit_price) : ''}${it.sku ? ' · ' + it.sku : ''}${it.status ? ' · ' + it.status : ''}</div></div>
-          <select class="input sm" data-item="${it.line_no}" aria-label="Category for ${it.title.slice(0, 60)}">${F.catOptions(it.category || '', { blank: 'Item category…' })}</select></div>`)}</div>
+          <span class="oi-tags"><select class="input sm" data-item="${it.line_no}" aria-label="Category for ${it.title.slice(0, 60)}">${F.catOptions(it.category || '', { blank: 'Item category…' })}</select>
+          <select class="input sm" data-item-person="${it.line_no}" aria-label="Who ${it.title.slice(0, 60)} was for"><option value="">Who…</option>${people.map((x) => html`<option ${x === it.person ? raw('selected') : ''}>${x}</option>`)}</select></span></div>`)}</div>
       <div class="span-5"><div class="label" style="margin-bottom:4px">Card charges</div>
         ${o.links.length ? html`<div class="rows">${o.links.map((t) => html`<button type="button" class="trow" data-txn="${t.txn_id}"><span class="d">${fmt.date(t.posted_date)}</span>
             <span class="t"><span class="ellipsis">${t.account}</span><span class="m">${t.method === 'manual' ? 'Linked by hand' : t.method === 'split_shipments' ? 'One of several shipments' : 'Same amount'}</span></span><span class="a">${F.amtCell(t.amount)}</span></button>`)}</div>`
@@ -64,7 +66,7 @@ F.pages.orders = async (root, r, ctl) => {
           ${d.orders.length ? html`<div class="orders" id="orders-list">${d.orders.map(orderRow)}</div>
             <div class="panel-foot" id="orders-more">${moreBtn()}</div>` : n.total ? F.empty('No orders match these filters', '', html`<button type="button" class="btn sm" data-reset>Clear filters</button>`) : F.empty('No orders imported yet', 'Orders arrive with the order-history import. Once they’re in, each one is linked to the card charge it produced.')}</section>
         <section class="span-4">${F.secHead('What we bought', { sub: 'By item category' })}${d.item_categories.length ? F.hbars(d.item_categories.map((c) => ({ label: c.name, value: c.total })), { labelDot: (i) => F.catVar(i.label), valueFmt: (v) => fmt.amt(v, { cents: false }) }) : F.empty('Set item categories to see this', 'Open an order and pick a category for each item.')}
-          <p class="caption">Item categories are separate from the card charge’s category — useful when one Amazon order mixes groceries, school supplies and household items.</p></section></div>`
+          <p class="caption">Each matched charge is split by these item categories and people (tax and shipping spread over the items), so Spending counts groceries, school supplies and household items in their own categories.</p></section></div>`
     : html`<section style="margin-top:24px">${F.secHead('Amazon and Target charges with no order', { sub: 'Open one to link it to an order placed around that date' })}
         ${d.unmatched_charges.length ? html`<div class="rows">${d.unmatched_charges.map((t) => html`<button type="button" class="trow" data-txn="${t.txn_id}"><span class="d">${fmt.date(t.posted_date)}</span>
           <span class="t"><span class="ellipsis">${t.merchant_name}</span><span class="m ellipsis">${t.account} · ${t.description}</span></span><span class="a">${F.amtCell(t.amount)}</span></button>`)}</div>`
@@ -81,6 +83,10 @@ F.pages.orders = async (root, r, ctl) => {
     $$('[data-item]', det).forEach((s) => (s.onchange = async () => {
       await F.post('/api/order_item', { order_id: det.dataset.order, line_no: +s.dataset.item, category: s.value });
       F.toast('Item category saved');
+    }));
+    $$('[data-item-person]', det).forEach((s) => (s.onchange = async () => {
+      await F.post('/api/order_item', { order_id: det.dataset.order, line_no: +s.dataset.itemPerson, person: s.value });
+      F.toast(s.value ? `Item marked for ${s.value}` : 'Person cleared');
     }));
   };
   bindTxn(root);

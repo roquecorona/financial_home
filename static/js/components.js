@@ -301,7 +301,7 @@
         <div class="row" style="align-items:flex-start"><div style="flex:1;min-width:0"><b>${o.label}</b><div class="small muted">${fmt.date(o.order_date, { year: true })} · ${o.items.length} item${o.items.length === 1 ? '' : 's'} · total ${fmt.money(o.total)}${o.ordered_by ? ' · by ' + o.ordered_by : ''}</div></div>
           ${o.url ? html`<a class="btn sm" href="${o.url}" target="_blank" rel="noopener noreferrer">${icon('ext')}Open on ${fmt.label(o.retailer)}</a>` : ''}</div>
         <div class="list" style="margin-top:8px">${o.items.map((it) => html`<div class="row" style="padding:5px 0;border-top:1px solid var(--line-2);align-items:flex-start">
-          <div style="flex:1;min-width:0">${it.product_url ? html`<a href="${it.product_url}" target="_blank" rel="noopener noreferrer">${it.title}</a>` : it.title}<div class="tiny muted">${it.quantity > 1 ? `${fmt.num(it.quantity)} × ` : ''}${fmt.money(it.unit_price)}${it.category ? ' · ' + it.category : ''}</div></div></div>`)}</div>
+          <div style="flex:1;min-width:0">${it.product_url ? html`<a href="${it.product_url}" target="_blank" rel="noopener noreferrer">${it.title}</a>` : it.title}<div class="tiny muted">${it.quantity > 1 ? `${fmt.num(it.quantity)} × ` : ''}${fmt.money(it.unit_price)}${it.category ? ' · ' + it.category : ''}${it.person ? ' · ' + it.person : ''}</div></div></div>`)}</div>
         <div class="row small" style="margin-top:8px"><span class="pill ${o.match === 'matched' ? 'good' : o.match === 'partial' ? 'warn' : 'neutral'}">${o.match === 'matched' ? 'Charges match the total' : o.match === 'partial' ? `Linked ${fmt.money(o.linked_total)} of ${fmt.money(o.total)}` : 'Not matched'}</span>
           <button class="btn xs ghost" data-unlink="${o.order_id}" style="margin-left:auto">Unlink</button></div></div>`;
       setHTML(el, html`
@@ -330,6 +330,7 @@
               <div class="list" style="margin-top:6px">${t.order_candidates.filter((c) => !t.orders.some((o) => o.order_id === c.order_id)).map((c) => html`<div class="list-item"><div class="main-col"><div class="title">${c.first_item || c.label}</div>
               <div class="meta">${c.label} · ${fmt.date(c.order_date)} · ${c.items} item${c.items === 1 ? '' : 's'}</div></div><span class="amount">${fmt.money(c.total)}</span><button class="btn xs" data-link="${c.order_id}">Link</button></div>`)}</div>`
             : (!t.orders.length ? html`<p class="small muted">No ${fmt.label(t.retailer)} orders within a month of this charge. Import your order history with scripts/ingest_orders.py.</p>` : '')}</section>` : ''}
+          ${t.is_transfer ? '' : html`<section id="d-split"></section>`}
           <section><h3>Notes</h3>${t.notes ? html`<div class="callout" style="margin-bottom:10px">${icon('note')}<div><div class="small muted">Earlier note</div>${t.notes}</div></div>` : ''}<div id="d-notes"></div></section>
           <section><h3>Details</h3><dl class="kv">
             <dt>Bank description</dt><dd>${t.description}</dd>
@@ -361,6 +362,7 @@
       $$('[data-unlink]', el).forEach((b) => (b.onclick = async () => { await F.post('/api/order_link', { txn_id: t.txn_id, order_id: b.dataset.unlink, action: 'unlink' }); F.toast('Order unlinked'); close(); F.openTxn(id, { onChange }); changed(); }));
       $$('[data-open]', el).forEach((b) => (b.onclick = () => { close(); F.openTxn(b.dataset.open, { onChange }); }));
       F.notesBlock($('#d-notes', el), 'transaction', t.txn_id, t.notes_list, { onChange: changed, compact: true });
+      if ($('#d-split', el) && F.splitSection) F.splitSection($('#d-split', el), t, { onChange: changed });
     }, { label: 'Transaction details' });
   };
 

@@ -8,14 +8,25 @@ F.pages.investments = async (root, r, ctl) => {
   const PERIODS = [['ytd', 'Year to date'], ['1y', '1 year'], ['3y', '3 years'], ['5y', '5 years'], ['all', 'All'], ['custom', 'Custom']];
   const start = { ytd: `${y}-01-01`, '1y': F.addDays(t, -365), '3y': F.addDays(t, -1095), '5y': F.addDays(t, -1826), all: '', custom: p.start || '' }[p.period] ?? '';
   const end = p.period === 'custom' && p.end ? p.end : t;
-  const d = await F.get('/api/investments', { types: p.types, accounts: p.accounts, start, end });
+  // Kids' 529s stay out of the household figures unless this remembered toggle is on.
+  const lsGet = (k, def) => { try { return localStorage.getItem(k) ?? def; } catch { return def; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
+  const kids = lsGet('fin.kids529', '0') === '1';
+  let fullOnly = lsGet('fin.inv.fullHistory', '0') === '1';
+  const d = await F.get('/api/investments', { types: p.types, accounts: p.accounts, start, end, kids529: kids ? '1' : '' });
   if (!ctl.alive()) return;
+  const k529 = d.kids_529;
+  const hist = d.history || {};
+  const mmyyyy = (iso) => `${iso.slice(5, 7)}.${iso.slice(0, 4)}`;
   const setP = (patch) => F.go('#/investments?' + new URLSearchParams(Object.entries({ ...p, ...patch }).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString());
   const types = [...new Set(d.accounts.map((a) => a.type))];
   const selTypes = (p.types || '').split(',').filter(Boolean);
   const selAccts = new Set(d.selected);
-  const color = (aid) => { const i = d.accounts.findIndex((a) => a.account_id === aid); return i >= 0 && i < 8 ? F.css(`--s${i + 1}`) : F.css('--s-other'); };
-  const colorVar = (aid) => { const i = d.accounts.findIndex((a) => a.account_id === aid); return i >= 0 && i < 8 ? `var(--s${i + 1})` : 'var(--s-other)'; };
+  const pickable = d.accounts.filter((a) => a.type !== '529' || (k529 && k529.included));
+  // Palette order: open household accounts first, so the kids' 529s and closed accounts don't use up the 8 series colors.
+  const palette = [...d.accounts].sort((a, b) => ((a.type === '529') - (b.type === '529')) || ((a.status === 'closed') - (b.status === 'closed')));
+  const color = (aid) => { const i = palette.findIndex((a) => a.account_id === aid); return i >= 0 && i < 8 ? F.css(`--s${i + 1}`) : F.css('--s-other'); };
+  const colorVar = (aid) => { const i = palette.findIndex((a) => a.account_id === aid); return i >= 0 && i < 8 ? `var(--s${i + 1})` : 'var(--s-other)'; };
   const st = d.stats || {};
   const c = d.contributions;
   const TYPE = (x) => F.typeLabel(x);
@@ -25,23 +36,28 @@ F.pages.investments = async (root, r, ctl) => {
   const periodLabel = st.start_date ? `${fmt.date(F.addDays(st.start_date, 1), { year: true })} – ${fmt.date(st.end_date, { year: true })}` : '';
   const hasCost = holdings.some((h) => h.cost_basis);
   const hasHistory = d.series.filter((m) => !start || m.month >= start.slice(0, 7)).length >= 2;
+  const ser0 = d.series.filter((m) => !start || m.month >= start.slice(0, 7));
+  const lateMissing = ser0.length ? d.accounts.filter((a) => selAccts.has(a.account_id) && hist[a.account_id] && hist[a.account_id].missing_before
+    && hist[a.account_id].first_date.slice(0, 7) > ser0[0].month) : [];
   const pctOrDash = (v) => (v === null || v === undefined ? '—' : fmt.pct(v, 1, true));
 
   // ---------- forecast defaults ----------
   const fcDefaults = {
-    start: Math.round(d.total_value || 0), monthly: Math.round(c.avg_month_employee || 0), employer: Math.round(c.avg_month_employer || 0), growth: 3,
+    start: Math.round(d.total_value || 0), monthly: Math.round(c.avg_month_employee_regular ?? c.avg_month_employee ?? 0), employer: Math.round(c.avg_month_employer || 0), growth: 3,
     ret: 7, vol: 15, infl: 2.5, real: false, horizonYear: y + 25, targetYear: y + 20, target: Math.round(((d.total_value || 0) * 3) / 50000) * 50000 || 1000000, paths: 2000,
   };
   let fc = { ...fcDefaults };
-  try { const saved = JSON.parse(localStorage.getItem('fin.fc') || 'null'); if (saved && saved._for === (p.accounts || p.types || 'all')) fc = { ...fcDefaults, ...saved, start: fcDefaults.start }; } catch { /* ignore */ }
+  const fcKey = (p.accounts || p.types || 'all') + (kids ? '+529' : '');
+  try { const saved = JSON.parse(localStorage.getItem('fin.fc') || 'null'); if (saved && saved._for === fcKey) fc = { ...fcDefaults, ...saved, start: fcDefaults.start }; } catch { /* ignore */ }
   let compare = new Set();
 
   F.setHTML(root, html`
     ${F.head({ title: 'Investments', lede: 'What we’ve put in, what the market added, and where it’s heading — across retirement, HSA and brokerage accounts.',
       actions: html`<a class="btn" href="#/investments?${new URLSearchParams({ ...r.params, focus: 'forecast' }).toString()}" data-jump-fc>Forecast</a><button type="button" class="btn primary" data-add-snap>${icon('plus')}Add a past balance</button>` })}
     <div class="filters">
+      ${k529 ? html`<label class="check small" title="The 529s are for the kids, so they are left out of our totals, returns and forecast unless this is on"><input type="checkbox" data-kids529 ${kids ? raw('checked') : ''}> Include kids’ 529s</label>` : ''}
       <div class="chips" role="group" aria-label="Account types">${types.map((x) => html`<button class="chip" data-type="${x}" aria-pressed="${String(selTypes.includes(x))}">${TYPE(x)}</button>`)}</div>
-      <details class="pick" id="acct-pick"><summary class="btn sm">${selAccts.size === d.accounts.length ? 'All accounts' : `${selAccts.size} of ${d.accounts.length} accounts`} <span aria-hidden="true">▾</span></summary>
+      <details class="pick" id="acct-pick"><summary class="btn sm">${selAccts.size === pickable.length && pickable.every((a) => selAccts.has(a.account_id)) ? 'All accounts' : `${selAccts.size} of ${pickable.length} accounts`} <span aria-hidden="true">▾</span></summary>
         <div class="popover pick-body">
           ${d.accounts.map((a) => html`<label class="check" style="padding:5px 0;display:flex"><input type="checkbox" value="${a.account_id}" ${selAccts.has(a.account_id) ? raw('checked') : ''}><i class="dot" style="background:${raw(colorVar(a.account_id))}"></i><span class="ellipsis" style="flex:1">${a.label}</span><span class="small muted">${fmt.amt(a.balance, { cents: false })}</span></label>`)}
           <div class="row" style="margin-top:8px"><button class="btn sm primary" data-apply-accts>Show these</button><button class="btn sm ghost" data-all-accts>All</button></div></div></details>
@@ -49,7 +65,7 @@ F.pages.investments = async (root, r, ctl) => {
       ${p.period === 'custom' ? html`<input type="date" class="input sm" data-cs="start" value="${p.start || ''}" aria-label="From"><input type="date" class="input sm" data-cs="end" value="${p.end || t}" aria-label="To">` : ''}
     </div>
     <section class="band" style="--n:6" aria-label="Performance">
-      ${F.kpi('Value now', F.kpiMoney(d.total_value), `${selAccts.size} account${selAccts.size === 1 ? '' : 's'}`, { vcls: 'accent' })}
+      ${F.kpi('Value now', F.kpiMoney(d.total_value), `${selAccts.size} account${selAccts.size === 1 ? '' : 's'}${k529 && !k529.included ? ' · without kids’ 529s' : ''}`, { vcls: 'accent' })}
       ${F.kpi('Contributed', F.kpiMoney(c.period), 'In this period')}
       ${F.kpi('Market gain', st.market_gain !== null && st.market_gain !== undefined ? F.kpiMoney(st.market_gain) : '—', 'Value change minus contributions')}
       ${F.kpi('Time-weighted', pctOrDash(st.twr), st.twr_annualized !== null && st.twr_annualized !== undefined ? `${fmt.pct(st.twr_annualized, 1)} a year` : st.twr !== null && st.twr !== undefined ? 'Cumulative, under a year' : 'Needs 2+ valuations')}
@@ -59,15 +75,17 @@ F.pages.investments = async (root, r, ctl) => {
     ${hasHistory && !st.enough_history ? html`<div class="callout warn" style="margin-top:16px">${icon('info')}<div>Returns need at least two valuations in this period. Pick a longer period or add past statement balances with <b>Add a past balance</b>.</div></div>` : ''}
     ${(d.snapshots || []).some((s) => (s.note || '').includes('TEST DATA')) ? html`<div class="callout warn" style="margin-top:12px">${icon('alert')}<div>Some snapshots are marked TEST DATA. Delete them in the Past balances table once real statements are entered.</div></div>` : ''}
     <div class="grid">
-      ${hasHistory ? html`<section class="panel span-8"><div class="panel-head"><h2>Value over time</h2><span class="sub">${periodLabel || 'Month-end values'} · stacked by account</span></div>
-        <div class="panel-body"><div class="chart h-300" id="val-chart"></div><div id="val-legend"></div></div></section>` : html`<section class="span-8">${F.secHead('Value over time')}${F.empty('Charts appear once there are two valuations', html`Value over time, growth versus contributions and market gain by month need at least two dated balances per account. The bank sync adds one a day from now on; to see further back, add each account’s balance from an old statement (for example every December 31).`, html`<button type="button" class="btn primary" data-add-snap>${icon('plus')}Add a past balance</button>`)}</section>`}
+      ${hasHistory ? html`<section class="panel span-8"><div class="panel-head"><h2>Value over time</h2><span class="sub">${periodLabel || 'Month-end values'} · stacked by account</span>
+          ${lateMissing.length ? html`<div class="tools"><div class="seg sm" role="group" aria-label="Accounts in the chart"><button type="button" data-full="0" aria-pressed="${String(!fullOnly)}">All accounts</button><button type="button" data-full="1" aria-pressed="${String(fullOnly)}">Full history only</button></div></div>` : ''}</div>
+        <div class="panel-body"><div class="chart h-300" id="val-chart"></div><div id="val-legend"></div><div id="val-note"></div></div></section>` : html`<section class="span-8">${F.secHead('Value over time')}${F.empty('Charts appear once there are two valuations', html`Value over time, growth versus contributions and market gain by month need at least two dated balances per account. The bank sync adds one a day from now on; to see further back, add each account’s balance from an old statement (for example every December 31).`, html`<button type="button" class="btn primary" data-add-snap>${icon('plus')}Add a past balance</button>`)}</section>`}
       <section class="panel span-4"><div class="panel-head"><h2>Contributions</h2><span class="sub">Employee vs employer where the description says</span></div>
         <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Who</th><th class="num">Year to date</th><th class="num">12 months</th><th class="num">All time</th></tr></thead><tbody>
           <tr><td>Employee</td><td class="num" data-label="YTD">${fmt.amt(c.ytd_employee, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12_employee, { cents: false })}</td><td class="num key">${fmt.amt(c.all_employee, { cents: false })}</td></tr>
           <tr><td>Employer</td><td class="num" data-label="YTD">${fmt.amt(c.ytd_employer, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12_employer, { cents: false })}</td><td class="num key">${fmt.amt(c.all_employer, { cents: false })}</td></tr>
           <tr><td title="The 403(b) and snapshot-derived contributions don't say who paid">Not specified</td><td class="num" data-label="YTD">${fmt.amt(c.ytd_unspecified, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12_unspecified, { cents: false })}</td><td class="num key">${fmt.amt(c.all_unspecified, { cents: false })}</td></tr></tbody>
           <tfoot><tr><td>Total</td><td class="num" data-label="YTD">${fmt.amt(c.ytd, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12, { cents: false })}</td><td class="num key">${fmt.amt(c.all, { cents: false })}</td></tr></tfoot></table></div>
-          <div class="panel-body" style="padding-top:6px"><p class="small ink2">Averaging <b>${fmt.money((c.avg_month_employee || 0) + (c.avg_month_employer || 0), { cents: false })}</b> a month over the last ${fmt.num(c.t12_months_covered, 1)} months on record. The 12-month figure covers only months with data.</p></div></div></section>
+          <div class="panel-body" style="padding-top:6px"><p class="small ink2">Averaging <b>${fmt.money((c.avg_month_employee || 0) + (c.avg_month_employer || 0), { cents: false })}</b> a month over the last ${fmt.num(c.t12_months_covered, 1)} months on record${(c.lumps_t12 || []).length ? html`, or <b>${fmt.money((c.avg_month_employee_regular || 0) + (c.avg_month_employer || 0), { cents: false })}</b> without one-off deposits of $10K or more (${c.lumps_t12.map((l) => `${fmt.money(l.amount, { cents: false })} on ${fmt.date(l.date, { year: true })}`).join(', ')}) — the forecast uses that` : ''}. The 12-month figure covers only months with data.</p></div></div></section>
+      ${k529 ? kidsPanel() : ''}
       ${hasHistory ? html`<section class="panel span-8"><div class="panel-head"><h2>What we put in versus what it’s worth</h2><span class="sub">The gap is market growth</span></div>
         <div class="panel-body"><div class="chart h-260" id="cg-chart"></div>${F.legend([{ label: 'Value', color: F.css('--accent') }, { label: 'Starting value + net contributions', color: F.css('--ink'), type: 'dash' }])}</div></section>
       <section class="panel span-4"><div class="panel-head"><h2>Market gain by month</h2></div><div class="panel-body"><div class="chart h-260" id="gain-chart"></div></div></section>` : ''}
@@ -86,11 +104,11 @@ F.pages.investments = async (root, r, ctl) => {
           <tbody>${(d.snapshots || []).map((s) => html`<tr><td class="nowrap">${fmt.date(s.as_of, { year: true })}</td><td>${s.account}</td><td class="num key">${fmt.amt(s.balance)}</td><td class="num hide-sm">${s.contributions_ytd !== null ? fmt.money(s.contributions_ytd, { cents: false }) : '—'}</td>
             <td class="hide-sm small muted"><div class="ellipsis" style="max-width:220px" title="${s.note || ''}">${s.note || ''}</div></td><td class="right"><button class="btn xs ghost" data-edit-snap="${s.id}">Edit</button></td></tr>`)}</tbody></table>
           ${(d.snapshots || []).length ? '' : F.empty('No past balances yet', 'Add a value from an old statement — for example each December 31 — to extend the history.')}</div></div></section>
-      <section class="panel span-5"><div class="panel-head"><h2>Contributions and withdrawals</h2><span class="sub">In this period</span></div>
-        <div class="panel-body flush"><div class="list" style="max-height:420px;overflow-y:auto">${d.flows.filter((f) => f.kind === 'contribution' || f.kind === 'withdrawal').slice(0, 120).map((f) => html`<div class="list-item">
-          <div class="main-col"><div class="title">${f.kind === 'withdrawal' ? 'Withdrawal' : f.source === 'employer' ? 'Employer contribution' : f.source === 'employee' ? 'Our contribution' : f.source === 'snapshot' ? 'Contributions (from snapshots)' : 'Contribution'}</div><div class="meta">${fmt.date(f.date, { year: true })} · ${f.account}</div></div>
-          <span class="amount">${F.amtCell(f.amount)}</span></div>`)}</div>
-          ${d.flows.some((f) => f.kind === 'contribution' || f.kind === 'withdrawal') ? '' : F.empty('Nothing in this period')}</div></section>
+      <section class="panel span-5"><div class="panel-head"><h2>Contributions and withdrawals</h2><span class="sub">In this period · rollovers and transfers between accounts are not contributions</span></div>
+        <div class="panel-body flush"><div class="list" style="max-height:420px;overflow-y:auto">${d.flows.filter((f) => (f.kind === 'contribution' || f.kind === 'withdrawal' || f.kind === 'transfer') && Math.abs(f.amount) >= 1).slice(0, 120).map((f) => html`<div class="list-item">
+          <div class="main-col"><div class="title">${f.kind === 'transfer' ? (f.amount > 0 ? 'Moved in (rollover or transfer)' : 'Moved out (rollover or transfer)') : f.kind === 'withdrawal' ? 'Withdrawal' : f.source === 'employer' ? 'Employer contribution' : f.source === 'employee' ? 'Our contribution' : f.source === 'snapshot' ? 'Contributions (from snapshots)' : 'Contribution'}</div><div class="meta">${fmt.date(f.date, { year: true })} · ${f.account}</div></div>
+          <span class="amount ${f.kind === 'transfer' ? 'muted' : ''}">${F.amtCell(f.amount)}</span></div>`)}</div>
+          ${d.flows.some((f) => f.kind === 'contribution' || f.kind === 'withdrawal' || f.kind === 'transfer') ? '' : F.empty('Nothing in this period')}</div></section>
       <section class="panel span-12"><details class="disclosure method"><summary>How these numbers are calculated</summary><div class="panel-body" style="padding-top:0">${methodology()}</div></details></section>
     </div>`);
 
@@ -103,7 +121,13 @@ F.pages.investments = async (root, r, ctl) => {
   $$('[data-cs]', root).forEach((i) => (i.onchange = () => setP({ [i.dataset.cs]: i.value })));
   $('[data-apply-accts]', root).onclick = () => setP({ accounts: $$('#acct-pick input:checked', root).map((i) => i.value).join(','), types: '' });
   $('[data-all-accts]', root).onclick = () => setP({ accounts: '', types: '' });
-  $$('[data-add-snap]', root).forEach((b) => (b.onclick = () => snapModal({})));
+  $$('[data-add-snap]', root).forEach((b) => (b.onclick = () => snapModal(b.dataset.addSnap ? { account_id: b.dataset.addSnap } : {})));
+  const kb = $('[data-kids529]', root); if (kb) kb.onchange = () => { lsSet('fin.kids529', kb.checked ? '1' : '0'); F.refresh(); };
+  $$('[data-full]', root).forEach((b) => (b.onclick = () => {
+    fullOnly = b.dataset.full === '1'; lsSet('fin.inv.fullHistory', fullOnly ? '1' : '0');
+    $$('[data-full]', root).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    F.destroyCharts(); draw();
+  }));
   $$('[data-edit-snap]', root).forEach((b) => (b.onclick = () => snapModal(d.snapshots.find((s) => s.id === +b.dataset.editSnap))));
   $('[data-edit-map]', root).onclick = mapModal;
 
@@ -111,7 +135,7 @@ F.pages.investments = async (root, r, ctl) => {
     F.modal({
       title: s.id ? 'Edit past balance' : 'Add a past balance', sub: 'Use the ending balance from a statement. Contributions year-to-date helps separate saving from growth.',
       body: html`<div class="form-grid">
-        <div class="field full"><label>Account</label><select class="input" name="account_id">${d.accounts.map((a) => html`<option value="${a.account_id}" ${a.account_id === s.account_id ? raw('selected') : ''}>${a.label}</option>`)}</select></div>
+        <div class="field full"><label>Account</label><select class="input" name="account_id">${d.accounts.map((a) => html`<option value="${a.account_id}" ${a.account_id === s.account_id ? raw('selected') : ''}>${a.label}${hist[a.account_id] && hist[a.account_id].missing_before ? ` (history starts ${mmyyyy(hist[a.account_id].first_date)})` : ''}</option>`)}</select></div>
         <div class="field"><label>Statement date</label><input class="input" type="date" name="as_of" value="${s.as_of || ''}" required></div>
         <div class="field"><label>Balance</label><span class="money-wrap"><input class="input" name="balance" inputmode="decimal" value="${s.balance ?? ''}" required></span></div>
         <div class="field"><label>Contributions year to date</label><span class="money-wrap"><input class="input" name="contributions_ytd" inputmode="decimal" value="${s.contributions_ytd ?? ''}"></span><span class="hint">Optional</span></div>
@@ -183,7 +207,7 @@ F.pages.investments = async (root, r, ctl) => {
       onSubmit: async (v) => { if (!v.name.trim()) return false; await F.post('/api/scenario', { name: v.name, params: { ...fc } }); F.toast('Scenario saved'); const s = await F.get('/api/investments', { types: p.types, accounts: p.accounts, start, end }); d.scenarios = s.scenarios; runForecast(); },
     });
   };
-  const persist = () => { try { localStorage.setItem('fin.fc', JSON.stringify({ ...fc, _for: p.accounts || p.types || 'all' })); } catch { /* ignore */ } };
+  const persist = () => { try { localStorage.setItem('fin.fc', JSON.stringify({ ...fc, _for: fcKey })); } catch { /* ignore */ } };
   const runForecast = () => {
     const res = F.forecast({ ...fc, startMonth: F.thisMonth() });
     const at = res.atTarget;
@@ -243,13 +267,46 @@ F.pages.investments = async (root, r, ctl) => {
     if (!F.hasCharts) return;
     const ser = d.series.filter((m) => !start || m.month >= start.slice(0, 7));
     const labels = ser.map((m) => fmt.month(m.month, { short: true }));
-    const accts = d.accounts.filter((a) => selAccts.has(a.account_id) && ser.some((m) => m.by_account[a.account_id]));
+    const accts0 = d.accounts.filter((a) => selAccts.has(a.account_id) && ser.some((m) => m.by_account[a.account_id]));
+    // Accounts whose history starts partway through the chart with nothing tracked feeding them (e.g. the 403(b) before
+    // Voya) make the stack step up. "Full history only" leaves them out; otherwise they are marked where they start.
+    const lateIds = new Set(lateMissing.map((a) => a.account_id));
+    const accts = fullOnly ? accts0.filter((a) => !lateIds.has(a.account_id)) : accts0;
+    const startIdx = (aid) => { const h = hist[aid]; return h ? ser.findIndex((m) => m.month >= h.first_date.slice(0, 7)) : 0; };
     if (hasHistory) {
       const o = F.chartOpts({ kind: 'line', stacked: true });
+      // Before an account's first valuation it has no value (not zero): keep it out of the tooltip.
+      o.plugins.tooltip.filter = (it) => it.dataIndex >= startIdx(accts[it.datasetIndex].account_id);
+      o.plugins.tooltip.callbacks.label = (it) => {
+        const a = accts[it.datasetIndex], h = hist[a.account_id];
+        const tag = h && lateIds.has(a.account_id) && ser[it.dataIndex].month === h.first_date.slice(0, 7) ? ` (history starts ${mmyyyy(h.first_date)})` : '';
+        return `${a.label}: ${fmt.money(it.parsed.y, { cents: false })}${tag}`;
+      };
       o.plugins.tooltip.callbacks.footer = (items) => `Total ${fmt.money(items.reduce((s, i) => s + (i.parsed.y || 0), 0), { cents: false })}`;
+      const starts = {
+        id: 'histStarts', afterDatasetsDraw(ch) {
+          if (fullOnly) return;
+          const cx = ch.ctx; cx.save();
+          const narrow = ch.chartArea.right - ch.chartArea.left < 520;
+          lateMissing.forEach((a, k) => {
+            const i = startIdx(a.account_id); if (i <= 0) return;
+            const x = ch.scales.x.getPixelForValue(i);
+            cx.strokeStyle = F.css('--ink'); cx.setLineDash([3, 3]); cx.lineWidth = 1;
+            cx.beginPath(); cx.moveTo(x, ch.chartArea.top); cx.lineTo(x, ch.chartArea.bottom); cx.stroke();
+            cx.fillStyle = F.css('--ink-2'); cx.font = `500 11px ${C_FONT()}`; cx.textAlign = x > ch.chartArea.left + (ch.chartArea.right - ch.chartArea.left) * 0.6 ? 'right' : 'left';
+            cx.fillText(`${narrow ? TYPE(a.type) : a.label.replace(/^(Voya|Fidelity|Vanguard) /, '')} starts`, x + (cx.textAlign === 'right' ? -4 : 4), ch.chartArea.top + 10 + 14 * k);
+          });
+          cx.restore();
+        },
+      };
       F.chart($('#val-chart', root), { type: 'line', aria: 'Value over time by account', data: { labels, datasets: accts.map((a, i) => ({
-        ...F.lineDs(a.label, ser.map((m) => m.by_account[a.account_id] ?? 0), color(a.account_id)), fill: i === 0 ? 'origin' : '-1', backgroundColor: F.alpha(color(a.account_id), 0.55), borderWidth: 1.5, tension: 0.15 })) }, options: o });
-      F.setHTML($('#val-legend', root), F.legend(accts.map((a) => ({ label: a.label, color: color(a.account_id) }))));
+        ...F.lineDs(a.label, ser.map((m) => m.by_account[a.account_id] ?? 0), color(a.account_id)), fill: i === 0 ? 'origin' : '-1', backgroundColor: F.alpha(color(a.account_id), 0.55), borderWidth: 1.5, tension: 0.15 })) }, options: o, plugins: [starts] });
+      F.setHTML($('#val-legend', root), F.legend(accts.map((a) => ({ label: lateIds.has(a.account_id) ? `${a.label} · history starts ${mmyyyy(hist[a.account_id].first_date)}` : a.label, color: color(a.account_id) }))));
+      F.setHTML($('#val-note', root), lateMissing.length ? html`<div class="callout ${fullOnly ? '' : 'warn'}" style="margin-top:12px">${icon('info')}<div>${fullOnly
+        ? html`Showing only accounts with history across the whole chart. Left out: ${lateMissing.map((a) => `${a.label} (${fmt.money(a.balance, { cents: false })} now, history starts ${mmyyyy(hist[a.account_id].first_date)})`).join('; ')}.`
+        : lateMissing.map((a) => { const h = hist[a.account_id]; return html`<p style="margin:0 0 6px"><b>${a.label}</b>: history starts ${mmyyyy(h.first_date)}, so the chart steps up by ${fmt.money(h.first_value, { cents: false })} there — that is money we already had, not growth (returns count it as money coming in).${a.meta_notes ? html` ${a.meta_notes}` : ' Its earlier history isn’t in the data.'}</p>`; })}
+        ${fullOnly ? '' : html`<div class="row wrap" style="gap:6px;margin-top:4px">${lateMissing.map((a) => html`<button type="button" class="btn sm" data-add-snap="${a.account_id}">${icon('plus')}Add a past balance · ${a.label.replace(/^(Voya|Fidelity|Vanguard) /, '')}</button>`)}</div>`}</div></div>` : '');
+      $$('#val-note [data-add-snap]', root).forEach((b) => (b.onclick = () => snapModal({ account_id: b.dataset.addSnap })));
       let cum = ser[0].start || 0;
       const base = ser.map((m) => (cum += m.net_flow || 0));
       F.chart($('#cg-chart', root), { type: 'line', aria: 'Value versus contributions', data: { labels, datasets: [
@@ -266,6 +323,16 @@ F.pages.investments = async (root, r, ctl) => {
   if (pFocus === 'forecast') requestAnimationFrame(() => fcEl.scrollIntoView({ block: 'start' }));
   const jf = $('[data-jump-fc]', root); if (jf) jf.onclick = (e) => { e.preventDefault(); fcEl.scrollIntoView({ block: 'start', behavior: 'smooth' }); };
   ctl.rerender = () => { F.destroyCharts(); draw(); };
+
+  function kidsPanel() {
+    const k = k529;
+    return html`<section class="panel span-12" id="kids-529"><div class="panel-head"><h2>Kids’ 529s</h2><span class="sub">${k.included ? 'Included in the figures above (toggle “Include kids’ 529s” to leave them out)' : 'For the kids — not in our totals, returns, forecast or net worth'}</span><div class="tools"><b class="num">${fmt.amt(k.total, { cents: false })}</b></div></div>
+      <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Account</th><th class="num">Value</th><th class="num">Put in this year</th><th class="num">Put in, all time</th><th class="num">Growth</th></tr></thead>
+        <tbody>${k.accounts.map((a) => html`<tr><td><a href="#/accounts/${encodeURIComponent(a.account_id)}">${a.label.replace(/^Fidelity 529 - /, '')}</a> <span class="small muted">${a.as_of ? fmt.ago(a.as_of) : ''}</span></td>
+          <td class="num key" data-label="Value">${fmt.amt(a.balance, { cents: false })}</td><td class="num" data-label="This year">${fmt.amt(a.contributed_ytd, { cents: false })}</td>
+          <td class="num" data-label="All time">${fmt.amt(a.contributed_all, { cents: false })}</td><td class="num ${a.growth > 0 ? 'pos' : ''}" data-label="Growth">${fmt.amt(a.growth, { cents: false, sign: true })}</td></tr>`)}</tbody>
+        <tfoot><tr><td>Total</td><td class="num key" data-label="Value">${fmt.amt(k.total, { cents: false })}</td><td class="num" data-label="This year">${fmt.amt(k.contributed_ytd, { cents: false })}</td><td class="num" data-label="All time">${fmt.amt(k.contributed_all, { cents: false })}</td><td class="num" data-label="Growth">${fmt.amt(k.total - k.contributed_all, { cents: false, sign: true })}</td></tr></tfoot></table></div></div></section>`;
+  }
 
   function methodology() {
     return html`
@@ -288,6 +355,8 @@ F.pages.investments = async (root, r, ctl) => {
       <h3>Required monthly contribution</h3>
       <p>On a fixed set of simulated markets, each path’s final value is a straight line in our monthly contribution <var>c</var>: <var>V</var><sub>T</sub> = <var>A</var><sub>i</sub> + <var>c</var>·<var>B</var><sub>i</sub>. So each path needs <var>c</var><sub>i</sub> = (target − <var>A</var><sub>i</sub>) / <var>B</var><sub>i</sub>, and the amount that succeeds with probability <var>q</var> is the <var>q</var>-quantile of those — the median for 50%, the 80th percentile for 80% confidence.</p>
       <h3>Contributions: employee or employer</h3>
-      <p>Descriptions with “CO CONTR” or “employer” count as employer money; “PARTIC CONTR”, “contribution” or “employee” as ours. Voya 403(b) credits don’t say who paid, so they show as not specified; credits under $50 there are treated as dividends. Past balances with a contributions-year-to-date figure add contributions for periods before transactions were synced.</p>`;
+      <p>Descriptions with “CO CONTR” or “employer” count as employer money; “PARTIC CONTR”, “contribution” or “employee” as ours. Voya 403(b) credits don’t say who paid, so they show as not specified; credits under $50 there are treated as dividends. Past balances with a contributions-year-to-date figure add contributions for periods before transactions were synced.</p>
+      <h3>Rollovers, transfers and accounts that start late</h3>
+      <p>Money moved between accounts (rollovers, ACAT and in-kind transfers, journals) moves value in and out of each account but is never counted as a contribution or withdrawal, so a rollover doesn’t look like saving. An account’s first valuation counts as money coming in, so a late-starting account changes the value but not the returns. When nothing we track sent that money (for example the 403(b)’s years at Vanguard before Voya), the chart marks where the account’s history starts; add older statement balances to fill it in. Kids’ 529s are left out of every figure here unless “Include kids’ 529s” is on.</p>`;
   }
 };
