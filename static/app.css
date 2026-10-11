@@ -1091,3 +1091,59 @@ button.pill { background: none; cursor: pointer; font-family: inherit; }
 .quiet-note[open] > summary .linkish { text-decoration: none; }
 .quiet-note .quiet-body { padding: 4px 0 4px 12px; border-left: 1px solid var(--line); }
 .quiet-note .quiet-body p { margin: 0 0 6px; }
+
+/* ---------- Credit ---------- */
+ol.steps { margin: 10px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: var(--ink-2); text-align: left; }
+ol.steps b { color: var(--ink); }
+.cr-actions { list-style: none; margin: 0; padding: 0; }
+.cr-actions li { padding: 12px 0 12px 14px; border-top: 1px solid var(--line-2); border-left: 2px solid var(--line); }
+.cr-actions li:first-child { border-top: 0; }
+.cr-actions li.crit { border-left-color: var(--alert); }
+.cr-actions li.warn { border-left-color: var(--status-warn); }
+.cr-actions li.info { border-left-color: var(--ink); }
+.cr-actions li b { display: block; font-size: 14px; }
+.cr-actions li p { font-size: 13px; color: var(--ink-2); margin-top: 4px; }
+.cr-actions li .linkbtn { margin-top: 6px; }
+.cr-fval { display: inline-flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.cr-fval b { font-family: var(--display); font-size: 18px; font-weight: 700; letter-spacing: -.2px; min-width: 52px; display: inline-block; }
+.t tr.cr-sep td { padding-top: 16px; border-bottom: 1px solid var(--line); }
+.t.cr-accts tbody tr { cursor: pointer; }
+.t.cr-accts td:first-child { max-width: 280px; }
+/* account history: open → close bars by open date */
+.gantt { display: flex; flex-direction: column; font-size: 13px; }
+.g-axis, .g-row { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 12px; align-items: center; }
+.g-axis { border-bottom: 1px solid var(--rule); height: 24px; }
+.g-axis .g-track span { position: absolute; bottom: 4px; transform: translateX(-50%); font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.g-axis .g-track span:first-child { transform: none; }
+.g-row { min-height: 30px; border-bottom: 1px solid var(--line-2); cursor: pointer; }
+.g-row:hover { background: var(--surface-2); }
+.g-row:focus-visible { outline-offset: -2px; }
+.g-lbl { min-width: 0; display: flex; flex-direction: column; line-height: 1.2; padding: 3px 0; }
+.g-lbl .ellipsis { font-weight: 500; }
+.g-track { position: relative; height: 100%; min-height: 24px; }
+.g-grid { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+.g-bar { position: absolute; top: 50%; height: 10px; transform: translateY(-50%); background: var(--ink); min-width: 3px; }
+.g-bar.closed { background: var(--s-other); }
+.g-bar.au { opacity: .45; }
+.g-bar.bad { background: var(--alert); }
+/* payment history grid (drawer) */
+.pgrid { display: flex; flex-direction: column; gap: 4px; max-width: 420px; }
+.pg-row { display: grid; grid-template-columns: 44px repeat(12, minmax(0, 1fr)); gap: 4px; align-items: center; }
+.pg-row > span { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.pg-head > span { text-align: center; font-size: 11px; color: var(--muted); }
+.pg-row > i, .legend i.pg { display: block; height: 16px; background: var(--surface-3); }
+.legend i.pg { width: 10px; height: 10px; display: inline-block; }
+.pg-row > i.ok, .legend i.pg.ok { background: var(--pos); }
+.pg-row > i.late, .legend i.pg.late { background: var(--status-serious); }
+.pg-row > i.derog, .legend i.pg.derog { background: var(--alert); }
+.pg-row > i.unk, .legend i.pg.unk { background: var(--line); }
+.pg-row > i.none { background: transparent; border: 1px dashed var(--line-2); }
+@media (max-width: 760px) {
+  .g-axis, .g-row { grid-template-columns: 112px minmax(0, 1fr); gap: 8px; }
+  .g-lbl .ellipsis { font-size: 12.5px; }
+  .g-row { min-height: 36px; }
+  .cr-fval b { font-size: 16px; min-width: 44px; }
+  .t.cr-factors tr { gap: 6px 14px; }
+  .t.cr-accts td:first-child { max-width: none; }
+}
+@media print { .g-row { break-inside: avoid; } }

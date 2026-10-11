@@ -371,12 +371,12 @@ F.spark = (vals, { color = 'var(--ink)', w = 96, h = 28 } = {}) => {
 };
 
 /* ---------- router ---------- */
-/* Numbered navigation: 01 Home … 09 Notes, then Settings. Hand-entered records live where they belong
+/* Numbered navigation: 01 Home … 10 Notes (08 Credit), then Settings. Hand-entered records live where they belong
    (accounts on Accounts, transactions on Spending and in the transaction drawer, past balances on Investments,
    ledger entries on Properties), so there is no separate "Manual entry" screen. */
 const NAV = [['home', 'Home'], ['accounts', 'Accounts'], ['cards', 'Pay cards'], ['bills', 'Bills'], ['spending', 'Spending'],
-  ['orders', 'Orders'], ['investments', 'Investments'], ['properties', 'Properties'], ['notes', 'Notes']].map(([p, l], i) => [p, l, String(i + 1).padStart(2, '0')]);
-const NAV2 = [['settings', 'Settings', '10']];
+  ['orders', 'Orders'], ['investments', 'Investments'], ['credit', 'Credit'], ['properties', 'Properties'], ['notes', 'Notes']].map(([p, l], i) => [p, l, String(i + 1).padStart(2, '0')]);
+const NAV2 = [['settings', 'Settings', '11']];
 const NAV_NUM = Object.fromEntries([...NAV, ...NAV2].map(([p, , n]) => [p, n]));
 /* Phone tab bar: the five things done most from a phone, then More. */
 const MOBILE = [['home', 'Home'], ['cards', 'Cards'], ['bills', 'Bills'], ['spending', 'Spending'], ['accounts', 'Accounts']];
@@ -554,7 +554,7 @@ document.addEventListener('keydown', (e) => {
   if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === '/') { e.preventDefault(); $('#gsearch')?.focus(); return; }
   if (F._g) {
-    const map = { h: 'home', a: 'accounts', s: 'spending', c: 'cards', b: 'bills', i: 'investments', p: 'properties', o: 'orders', n: 'notes', ',': 'settings' };
+    const map = { h: 'home', a: 'accounts', s: 'spending', c: 'cards', b: 'bills', i: 'investments', r: 'credit', p: 'properties', o: 'orders', n: 'notes', ',': 'settings' };
     if (map[e.key]) F.go('#/' + map[e.key]);
     F._g = false; return;
   }

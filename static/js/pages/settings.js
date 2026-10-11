@@ -105,7 +105,7 @@ F.pages.settings = async (root, r, ctl) => {
     <div class="field"><span class="label" id="th-l">Theme</span><div class="seg" role="group" aria-labelledby="th-l">${['light', 'dark', 'auto'].map((k) => html`<button type="button" data-theme-set="${k}" aria-pressed="${String(F.theme === k)}">${F.themeLabel(k)}</button>`)}</div><span class="hint">Light is the default. “Match device” follows the phone or laptop setting.</span></div>
     </div></section>
     <section class="panel span-6 hide-sm"><div class="panel-head"><h2>Keyboard shortcuts</h2></div><div class="panel-body"><dl class="kv">
-      <dt><kbd>/</kbd></dt><dd>Search everything</dd><dt><kbd>g</kbd> then <kbd>h</kbd></dt><dd>Home (also a accounts, c cards, b bills, s spending, o orders, i investments, p properties, n notes, <kbd>,</kbd> settings)</dd>
+      <dt><kbd>/</kbd></dt><dd>Search everything</dd><dt><kbd>g</kbd> then <kbd>h</kbd></dt><dd>Home (also a accounts, c cards, b bills, s spending, o orders, i investments, r credit, p properties, n notes, <kbd>,</kbd> settings)</dd>
       <dt><kbd>Esc</kbd></dt><dd>Close a panel or dialog</dd><dt><kbd>Enter</kbd></dt><dd>Open the focused transaction</dd></dl></div></section></div>`);
   $$('[data-theme-set]', root).forEach((b) => (b.onclick = () => F.setTheme(b.dataset.themeSet)));
   const spw = $('[data-setpw]', root);
