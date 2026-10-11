@@ -197,13 +197,32 @@
       if (cand < today) cand = `${y + 1}-${cand.slice(5)}`;
       return cand;
     };
+    // the card's own fee charges are the best guide: the next fee posts about 12 months after the last one
+    const lastFee = new Map();
+    for (const t of DBx.Q(`SELECT account_id, posted_date, amount, description FROM transactions
+        WHERE (UPPER(description) LIKE '%ANNUAL%FEE%' OR UPPER(description) LIKE '%MEMBERSHIP FEE%') ORDER BY posted_date`)) {
+      const e = lastFee.get(t.account_id) || {};
+      if (/refund|reversal|credit/i.test(t.description || '') && t.amount > 0) { e.refunded = t.posted_date; lastFee.set(t.account_id, e); continue; }
+      if (t.amount <= 0) { e.date = t.posted_date; e.amount = -t.amount; e.refunded = null; lastFee.set(t.account_id, e); }
+    }
+    const fromCharge = (aid, opened) => {
+      const e = aid ? lastFee.get(aid) : null;
+      if (e && e.date) {
+        let next = addMonths(e.date, 12);
+        while (next < today) next = addMonths(next, 12);
+        return { next, last: e.date, last_amount: e.amount, refunded: e.refunded || null };
+      }
+      return { next: nextAnniv(opened), last: null, last_amount: null, refunded: null };
+    };
     for (const [aid, s] of cs) {
       const acct = labels.get(aid);
       if (!acct || !(s.annual_fee > 0) || acct.status === 'closed' || s.closed_date || !inP(acct.holder === 'Joint' ? people[0] : acct.holder)) continue;
       const app = household.find((a) => a.account_id === aid);
       const opened = s.opened_date || (app && (app.approved_date || app.applied_date));
-      fees.push({ account_id: aid, card: label(acct), person: acct.holder, fee: s.annual_fee, opened, next: nextAnniv(opened), days: days(today, nextAnniv(opened)),
-        source: 'card details' });
+      const fc = fromCharge(aid, opened);
+      if (fc.last && fc.last_amount === 0) continue; // the card's fee is waived or gone
+      fees.push({ account_id: aid, card: label(acct), person: acct.holder, fee: s.annual_fee, opened, next: fc.next, days: days(today, fc.next),
+        last_charged: fc.last, refunded: fc.refunded, source: 'card details' });
       feeSeen.add(aid);
     }
     for (const a of household) {
@@ -212,9 +231,21 @@
       const opened = a.ck_opened || a.approved_date || a.applied_date;
       // the same card already listed from its account details (a sheet row without a last4 that the import couldn't link)
       if (!a.account_id && fees.some((f) => f.person === a.person && f.opened && Math.abs(days(f.opened, opened) ?? 999) <= 31)) continue;
-      fees.push({ account_id: a.account_id, card: label(labels.get(a.account_id)) || a.card, person: a.person, fee: a.annual_fee, opened, next: nextAnniv(opened),
-        days: days(today, nextAnniv(opened)), source: 'sheet' + (a.downgraded_date ? ' (downgraded; may have no fee now)' : '') });
+      const fc = fromCharge(a.account_id, opened);
+      if (fc.last && fc.last_amount === 0) continue;
+      fees.push({ account_id: a.account_id, card: label(labels.get(a.account_id)) || a.card, person: a.person, fee: fc.last_amount || a.annual_fee, opened, next: fc.next,
+        days: days(today, fc.next), last_charged: fc.last, refunded: fc.refunded, source: 'sheet' });
       if (a.account_id) feeSeen.add(a.account_id);
+    }
+    // any other open card that charged a fee in the last 13 months
+    for (const [aid, e] of lastFee) {
+      if (feeSeen.has(aid) || !e.date || !(e.amount > 0) || days(e.date, today) > 400) continue;
+      const acct = labels.get(aid);
+      if (!acct || acct.status === 'closed' || !(people.includes(acct.holder) || (acct.holder === 'Joint' && people.length > 1))) continue;
+      const fc = fromCharge(aid, null);
+      fees.push({ account_id: aid, card: label(acct), person: acct.holder, fee: e.amount, opened: (cs.get(aid) || {}).opened_date || null, next: fc.next,
+        days: days(today, fc.next), last_charged: e.date, refunded: e.refunded || null, source: 'fee charge' });
+      feeSeen.add(aid);
     }
     fees.sort((x, y) => String(x.next || '9999').localeCompare(String(y.next || '9999')));
 

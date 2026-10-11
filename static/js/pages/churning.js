@@ -109,10 +109,10 @@ F.creditApps = async (root, r, ctl, { person, head, bindHead }) => {
     const total = list.reduce((s, f) => s + (f.fee || 0), 0);
     F.setHTML(el, html`<div class="list">${list.map((f) => html`<div class="list-item ${f.days <= 30 ? 'promo-soon' : ''}"><div class="dnum">${f.next.slice(5, 7)}.${f.next.slice(8, 10)}<div class="tiny muted" style="font-family:var(--font);font-weight:500">${f.next.slice(0, 4)}</div></div>
       <div class="main-col"><div class="title">${f.account_id ? raw(`<a href="#/accounts/${encodeURIComponent(f.account_id)}">${F.esc(f.card)}</a>`) : f.card}</div>
-        <div class="meta">${both ? short(f.person) + ' · ' : ''}opened ${ym(f.opened)} · ${f.days === 0 ? 'today' : `in ${f.days} days`}${f.source !== 'card details' ? ' · from the sheet' : ''}</div></div>
+        <div class="meta wrap">${both ? short(f.person) + ' · ' : ''}${f.last_charged ? `last charged ${ym(f.last_charged)}${f.refunded ? ', refunded' : ''}` : `opened ${ym(f.opened)} · estimated`} · ${f.days === 0 ? 'today' : `in ${f.days} days`}${f.source === 'sheet' ? ' · fee from the sheet' : ''}</div></div>
       <span class="num key">${money0(f.fee)}</span></div>`)}
       <div class="list-item"><div class="main-col"><div class="title muted">Next 12 months</div></div><span class="num key">${money0(total)}</span></div></div>
-      <p class="caption" style="padding:0 0 4px">The fee posts on the statement after the account’s anniversary; that’s the time to ask for a retention offer or a no-fee downgrade.</p>`);
+      <p class="caption" style="padding:0 0 4px">Dated 12 months after the last fee charge in the app (or the open-date anniversary when there isn’t one). The month before is the time to ask for a retention offer or a no-fee downgrade.</p>`);
   }
 
   function drawTimeline() {
