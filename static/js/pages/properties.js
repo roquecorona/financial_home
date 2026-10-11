@@ -248,7 +248,7 @@
       ${F.head({ crumb: html`<a href="#/properties">Properties</a>`, title: pr.name, lede: html`${statusPill(pr.status)} ${pr.address && pr.address !== pr.name ? pr.address : ''}`,
         actions: html`<select class="input sm" data-year style="width:auto" aria-label="Year"><option value="">All years</option>${d.pnl.years.map((y) => html`<option ${y === year ? raw('selected') : ''}>${y}</option>`)}</select>
           <button type="button" class="btn" data-edit>${icon('edit')}Edit profile</button><button type="button" class="btn primary" data-entry>${icon('plus')}Add entry</button>` })}
-      <section class="band" style="--n:6" aria-label="Profit and loss">
+      <section class="band" style="--n:${own && k.debt_service ? 7 : 6}" aria-label="Profit and loss">
         ${F.kpi('Income', F.kpiMoney(k.income), `${k.months} month${k.months === 1 ? '' : 's'} with activity`, { vcls: 'accent' })}
         ${F.kpi('Expenses', F.kpiMoney(-k.expenses), 'Operating')}
         ${F.kpi('NOI', F.kpiMoney(k.noi), own && !k.debt_service ? 'Income − expenses' : 'Before mortgage')}

@@ -289,9 +289,11 @@
       if (sheet_months.has(m)) continue;
       if (own_acct && DEPOSIT_SUB.test(r.subcategory || '')) continue;  // a security deposit held or refunded (cash flow, not P&L)
       const sub = r.subcategory || r.category || 'Other';
-      const kind = r.amount > 0 ? 'income' : /mortgage|pool loan|heloc/i.test(sub) ? 'debt' : 'expense';
+      // on a property with its own account, money taken back out of income (a reversed rent payment) is less income
+      const negInc = own_acct && r.category === 'Income' && r.amount < 0;
+      const kind = r.amount > 0 || negInc ? 'income' : /mortgage|pool loan|heloc/i.test(sub) ? 'debt' : 'expense';
       lines.push({
-        month: m, date: r.posted_date, kind, category: sub, amount: r2(Math.abs(r.amount)),
+        month: m, date: r.posted_date, kind, category: sub, amount: negInc ? r2(r.amount) : r2(Math.abs(r.amount)),
         description: H.merchant_of(r.description), source: 'bank', ref: r.txn_id,
       });
     }
@@ -412,12 +414,21 @@
     const names = [...new Set([p.ledger_name || p.name, p.name])].filter((x) => x);
     return Q(`SELECT * FROM property_ledger WHERE property IN (${names.map(() => '?').join(',')}) ORDER BY month, entry_id`, names);
   }
+  function unreconciledOwnerMonths(led) {
+    const by = {};
+    for (const r of led) if (LEDGER_OWNER.has(r.type)) (by[r.month] = by[r.month] || []).push(r);
+    return new Set(Object.keys(by).filter((m) => !by[m].some((r) => r.txn_id)));
+  }
   function property_distributions(p, led = null) {
     const H = h();
     const ent = p.entity || p.name;
     const hasCov = db().columns('property_ledger').includes('covers');
     led = led || (hasCov ? ledger_rows(p) : []);
     const linked = new Set(led.filter((r) => r.txn_id).map((r) => r.txn_id));
+    // a month whose sheet payouts were never matched to bank rows (before the bank feed) already lists them all: the
+    // bank's rows for it would count twice. Where the sheet was reconciled (some rows carry txn_id), unmatched bank
+    // payouts are extra and count.
+    const ownerMonths = unreconciledOwnerMonths(led);
     const pays = [];
     for (const r of led) {
       if (!LEDGER_OWNER.has(r.type)) continue;
@@ -427,7 +438,7 @@
     }
     for (const t of Q(`SELECT t.txn_id, t.posted_date, t.amount, t.description, COALESCE(t.person,'Unassigned') AS person FROM transactions t
         WHERE t.entity=? AND t.subcategory='Owner distribution' AND t.posted_date IS NOT NULL ORDER BY t.posted_date`, [ent])) {
-      if (linked.has(t.txn_id)) continue;
+      if (linked.has(t.txn_id) || ownerMonths.has(t.posted_date.slice(0, 7))) continue;
       pays.push({ date: t.posted_date, person: t.person, amount: r2(-t.amount), kind: 'distribution', covers: [], source: 'bank',
         txn_id: t.txn_id, description: H.merchant_of(t.description), flagged: null });
     }
@@ -507,13 +518,16 @@
       if (ledMonths.has(m) || !DEPOSIT_SUB.test(t.subcategory || '')) continue;
       M(m).deposits += t.amount; M(m).sources.add('bank');
     }
-    for (const t of Q(`SELECT txn_id, posted_date, amount FROM transactions WHERE entity=? AND subcategory='Owner distribution'
-        AND posted_date IS NOT NULL`, [ent])) {
-      if (linked.has(t.txn_id)) continue;
-      const x = M(t.posted_date.slice(0, 7));
-      x.take_home += -t.amount; x.sources.add('bank');
+    const accts = own_accounts(p);
+    const ownerMonths = unreconciledOwnerMonths(led);
+    for (const t of Q(`SELECT txn_id, posted_date, amount, account_id, subcategory, is_transfer FROM transactions WHERE entity=?
+        AND (subcategory='Owner distribution' OR (is_transfer=1 AND account_id IN (${accts.map(() => '?').join(',') || "''"})))
+        AND posted_date IS NOT NULL`, [ent, ...accts])) {
+      const m = t.posted_date.slice(0, 7);
+      if (linked.has(t.txn_id) || ownerMonths.has(m) || (ledMonths.has(m) && t.subcategory !== 'Owner distribution')) continue;
+      const x = M(m);
+      x.take_home += -t.amount; x.sources.add('bank');  // payouts less money the owners put in
     }
-    const accts = p.entity ? Q('SELECT account_id FROM accounts WHERE entity=? AND COALESCE(include_in_totals,1)=0', [p.entity]).map((r) => r.account_id) : [];
     const sheet = {};
     if (accts.length) {
       for (const r of Q(`SELECT month, SUM(balance) AS b FROM sheet_cash_balances WHERE account IN (${accts.map(() => '?').join(',')})
@@ -526,10 +540,11 @@
       for (const f of ['income', 'expenses', 'debt', 'deposits', 'take_home']) x[f] = r2(x[f]);
       x.net = r2(x.income + x.deposits - x.expenses - x.debt - x.take_home);
       x.start = prev === null ? null : r2(prev);
-      x.end = prev === null ? (sheet[k] ?? null) : r2(prev + x.net);
+      x.rolled = prev === null ? null : r2(prev + x.net);
       x.sheet_balance = sheet[k] ?? null;
-      x.sheet_differs = x.sheet_balance !== null && x.end !== null && Math.abs(x.end - x.sheet_balance) >= 1;
-      prev = x.sheet_balance !== null && !x.sheet_differs ? x.sheet_balance : x.end;
+      x.end = x.sheet_balance !== null ? x.sheet_balance : x.rolled;
+      x.sheet_differs = x.sheet_balance !== null && x.rolled !== null && Math.abs(x.rolled - x.sheet_balance) >= 1;
+      prev = x.end;
       x.sources = [...x.sources].sort();
       return x;
     });
