@@ -1147,3 +1147,32 @@ ol.steps b { color: var(--ink); }
   .t.cr-accts td:first-child { max-width: none; }
 }
 @media print { .g-row { break-inside: avoid; } }
+/* Credit → Applications (churning) */
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+.h-sub { margin-bottom: 8px; }
+.ch-tl .g-row { cursor: default; }
+.ch-ev { position: absolute; top: 50%; width: 9px; height: 9px; margin-left: -4.5px; transform: translateY(-50%); background: var(--ink); border-radius: 50%; }
+.ch-ev[data-app] { cursor: pointer; }
+.ch-ev[data-app]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ch-ev.declined { background: transparent; border: 1.5px solid var(--ink-2); }
+.ch-ev.conflict { background: var(--alert); }
+.ch-ev.inquiry { width: 2px; height: 16px; margin-left: -1px; border-radius: 0; background: var(--ink-2); }
+.ch-ev.matched, .ch-ev.au, .ch-ev.unmatched { width: 9px; height: 9px; border-radius: 0; }
+.ch-ev.au { opacity: .45; }
+.ch-ev.unmatched { background: var(--warn); }
+.legend i.ch-key { display: inline-block; width: 9px; height: 9px; background: var(--ink); border-radius: 50%; }
+.legend i.ch-key.declined { background: transparent; border: 1.5px solid var(--ink-2); }
+.legend i.ch-key.conflict { background: var(--alert); }
+.legend i.ch-key.inquiry { width: 2px; height: 12px; border-radius: 0; background: var(--ink-2); }
+.legend i.ch-key.matched { border-radius: 0; }
+.legend i.ch-key.unmatched { border-radius: 0; background: var(--warn); }
+.ch-524 { padding: 12px 0; border-bottom: 1px solid var(--line-2); }
+.ch-524:last-of-type { border-bottom: 0; }
+.ch-524-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.ch-prog .right { min-width: 92px; }
+.ch-checks { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+@media (max-width: 760px) {
+  .grid-2 { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .ch-ev { width: 7px; height: 7px; margin-left: -3.5px; }
+}
+.grid-2 .hbar { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "lbl val" "track track"; gap: 6px 12px; }

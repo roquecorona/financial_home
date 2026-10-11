@@ -8,6 +8,10 @@ F.pages.credit = async (root, r, ctl) => {
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
   const p = Object.assign({ person: lsGet('fin.credit.person', '') }, r.params);
   const person = ['Roque', 'Jennifer'].includes(p.person) ? p.person : '';
+  const view = p.view === 'apps' ? 'apps' : 'reports';
+  const setPerson = (x) => { lsSet('fin.credit.person', x); F.go('#/credit' + qs(x, view)); };
+  // Credit → Applications (static/js/pages/churning.js): card applications, bonuses, 5/24, MS — same head and person picker
+  if (view === 'apps' && F.creditApps) return F.creditApps(root, r, ctl, { person, head, bindHead });
   const d = await F.get('/api/credit', { person });
   if (!ctl.alive()) return;
   const short = (x) => (x === 'Jennifer' ? 'Jenny' : x);
@@ -28,7 +32,7 @@ F.pages.credit = async (root, r, ctl) => {
   };
   const seriesColor = (i) => F.css(`--s${(i % 8) + 1}`);
   const seriesVar = (i) => `var(--s${(i % 8) + 1})`;
-  const setPerson = (x) => { lsSet('fin.credit.person', x); F.go('#/credit' + (x ? '?person=' + x : '')); };
+  function qs(x, v) { const q = new URLSearchParams(); if (x) q.set('person', x); if (v === 'apps') q.set('view', 'apps'); const t = q.toString(); return t ? '?' + t : ''; }
   const hasReport = d.has.accounts || d.has.scores;
 
   // ---------- KPI band
@@ -109,10 +113,15 @@ F.pages.credit = async (root, r, ctl) => {
 
   // ---------- pieces
   function head() {
-    return F.head({ title: 'Credit', lede: 'Scores over time, what moves them and every account on the credit reports — with the next steps that help most.',
-      actions: html`<div class="seg" role="group" aria-label="Person">${[['', 'Both'], ['Roque', 'Roque'], ['Jennifer', 'Jenny']].map(([k, l]) => html`<button type="button" data-person="${k}" aria-pressed="${String(person === k)}">${l}</button>`)}</div>` });
+    return F.head({ title: 'Credit', lede: view === 'apps' ? 'Card applications next to the credit reports: sign-up bonuses, 5/24, annual fees and manufactured spending.'
+        : 'Scores over time, what moves them and every account on the credit reports — with the next steps that help most.',
+      actions: html`<div class="seg" role="group" aria-label="View">${[['reports', 'Reports'], ['apps', 'Applications']].map(([k, l]) => html`<button type="button" data-view="${k}" aria-pressed="${String(view === k)}">${l}</button>`)}</div>
+        <div class="seg" role="group" aria-label="Person">${[['', 'Both'], ['Roque', 'Roque'], ['Jennifer', 'Jenny']].map(([k, l]) => html`<button type="button" data-person="${k}" aria-pressed="${String(person === k)}">${l}</button>`)}</div>` });
   }
-  function bindHead() { $$('[data-person]', root).forEach((b) => (b.onclick = () => setPerson(b.dataset.person))); }
+  function bindHead() {
+    $$('[data-person]', root).forEach((b) => (b.onclick = () => setPerson(b.dataset.person)));
+    $$('[data-view]', root).forEach((b) => (b.onclick = () => F.go('#/credit' + qs(person, b.dataset.view))));
+  }
 
   function ageLine() {
     return people.filter((x) => d.summary[x].has_bureau).map((x) => {
