@@ -28,16 +28,7 @@
   H.NON_SPEND = ['Income', 'Transfer', 'Investments'];
   H.VARIABLE_BILLS = /groceries|gas, tolls|cleaning|lawn/iu;
   H.ASSET_CLASSES = ['US stock', 'Intl stock', 'Bonds', 'Cash', 'Real estate', 'Other'];
-  H.BILL_KEYWORDS = {
-    'honda': 'honda', 'geico': 'geico', 'mr. cooper': 'rocket mortgage|mr cooper|mr. cooper', 'slice': 'slice',
-    'florida power': 'fpl', 'water and sewer': 'mdws|m-dwasd', 'at&t': 'att*|at&t', 'pool services': 'salsons',
-    'google pay': 'google', 'life insurance': 'lincoln', 'ufc gym': 'active n fit|ufc', 'claude': 'claude|anthropic',
-    'chatgpt': 'chatgpt|openai', 'netflix': 'netflix', 'disney plus': 'disney plus|hulu', 'google one': 'google one|google *g1',
-    'spotify': 'spotify', 'scribd': 'scribd', 'mynetdiary': 'mynetdiary', 'calorie': 'calorie', 'playbook': 'playbook',
-    'us bank': 'u.s. bank|us bank', 'affrim': 'affirm', 'synchrony': 'synchrony', 'gymnastics': 'gymnastics',
-    'tennis': 'tennis', 'tuition': 'tuition|divine savior', 'cleaning': 'reina|cleaning', 'lawn': 'francisco',
-    'groceries': '', 'ricci': 'ricci|orthodont',
-  };
+  H.BILL_KEYWORDS = {}; // bill keyword hints live in the data (bills.keyword), not in public code
   H.BILL_CATS = {
     'groceries': ['Food', 'Groceries'], 'gas, tolls': ['Transportation', null], 'cleaning': ['Home services', 'Cleaning'],
     'lawn': ['Home services', 'Lawn'],

@@ -356,6 +356,10 @@ button.list-item:first-child { border-top: 0; }
 .list-item .title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list-item .meta { font-size: 13px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list-item .amount { font-variant-numeric: tabular-nums; font-weight: 500; white-space: nowrap; text-align: right; }
+.list-item .meta.wrap, .list-item.partner .meta { white-space: normal; overflow: visible; }
+.list-item.partner { align-items: flex-start; }
+.list-item.partner .title .pill { margin-left: 6px; vertical-align: 1px; }
+.t.cf tfoot td { font-weight: 600; border-top: 1px solid var(--rule); border-bottom: 0; }
 .date-tile, .dnum { font-family: var(--display); font-weight: 700; font-size: 22px; letter-spacing: -.3px; width: 64px; flex: none; line-height: 1.1; }
 .date-tile.overdue, .dnum.overdue { color: var(--alert); }
 .date-tile.today, .dnum.today { color: var(--accent); }

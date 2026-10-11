@@ -123,14 +123,98 @@
     }));
   };
 
-  // owner distributions per partner per year; a partner whose payouts stopped while others continue is marked
+  // months a payment covers, compressed: ['2024-08','2024-10','2024-11'] -> 'Aug, Oct–Nov 2024'
+  const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function covLabel(ms) {
+    if (!ms || !ms.length) return '';
+    const byYear = new Map();
+    for (const m of [...ms].sort()) { const y = m.slice(0, 4); if (!byYear.has(y)) byYear.set(y, []); byYear.get(y).push(+m.slice(5, 7)); }
+    return [...byYear.entries()].map(([y, ns]) => {
+      const runs = [];
+      for (const n of ns) { const r = runs[runs.length - 1]; if (r && n === r[1] + 1) r[1] = n; else runs.push([n, n]); }
+      return runs.map(([a, b]) => (a === b ? MON[a - 1] : `${MON[a - 1]}–${MON[b - 1]}`)).join(', ') + ' ' + y;
+    }).join('; ');
+  }
+  const money0 = (v) => fmt.money(v, { cents: false });
+
+  // owner distributions per partner per year; with a sheet ledger, also the months each partner has been paid for, what
+  // is still unpaid (catch-up), and every payment with the months it covers
   function distPanel(dd) {
     const latest = Object.values(dd.last).sort().pop() || '';
     const stopped = (p) => dd.last[p] && latest && (Date.parse(latest) - Date.parse(dd.last[p])) / 864e5 > 120;
-    return html`<div class="panel"><div class="panel-head"><h2>Owner distributions</h2><span class="sub">Paid out of the property’s account</span></div>
-      <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Year</th>${dd.partners.map((p) => html`<th class="num">${p}</th>`)}</tr></thead>
-      <tbody>${dd.rows.map((r) => html`<tr><td data-label=""><b>${r.year}</b></td>${dd.partners.map((p) => html`<td class="num" data-label="${p}">${r.by[p] ? fmt.money(r.by[p], { cents: false }) : '—'}</td>`)}</tr>`)}
-      <tr><td data-label=""><b>Last paid</b></td>${dd.partners.map((p) => html`<td class="num small" data-label="${p}">${fmt.date(dd.last[p], { year: true })}${stopped(p) ? html`<br><span class="pill neutral">Stopped</span>` : ''}</td>`)}</tr></tbody></table></div></div></div>`;
+    const cov = dd.coverage || [];
+    const covRow = (c) => html`<div class="list-item partner"><div class="main-col"><span class="title">${c.person}
+        ${c.stopped ? html`<span class="pill neutral">Stopped</span>` : c.behind.length || c.gaps.length ? html`<span class="pill warn">Owed ${c.behind.length + c.gaps.length} mo</span>` : html`<span class="pill good">Up to date</span>`}</span>
+      <span class="meta">Paid through ${fmt.month(c.covered_through)} · ${c.months_covered} months in ${c.payments} payment${c.payments === 1 ? '' : 's'}${c.batches ? ` (${c.batches} catch-up batch${c.batches === 1 ? '' : 'es'})` : ''}</span>
+      ${c.behind.length || c.gaps.length ? html`<span class="meta warn-text">Not yet paid: ${covLabel([...c.gaps, ...c.behind])}${c.owed_estimate ? ` · about ${money0(c.owed_estimate)}` : ''}</span>` : ''}
+      ${c.draws ? html`<span class="meta">Includes ${fmt.money(c.draws)} of personal charges on the account</span>` : ''}</div>
+      <span class="amount">${money0(dd.total[c.person] || 0)}</span></div>`;
+    const pays = dd.payments || [];
+    const SRCP = { both: ['good', 'Sheet + bank'], sheet: ['neutral', 'Sheet'], bank: ['info', 'Bank'] };
+    const payRow = (x) => html`<tr title="${SRCP[x.source][1]}${x.flagged ? ' · ' + x.flagged : ''}"${x.txn_id ? raw(` class="clickable" tabindex="0" data-btxn="${x.txn_id}"`) : ''}><td class="nowrap">${fmt.date(x.date, { year: true })}</td>
+      <td data-label="">${x.person}${x.kind === 'draw' ? html` <span class="pill neutral">Personal charge</span>` : ''}</td>
+      <td data-label="For">${covLabel(x.covers) || '—'}${x.flagged ? html` <span class="pill warn">Check</span>` : ''}</td>
+      <td class="num key">${fmt.money(x.amount)}</td></tr>`;
+    return html`<div class="panel"><div class="panel-head"><h2>Owner distributions</h2><span class="sub">Paid out of the property’s account${dd.rate ? ` · now ${money0(dd.rate)} a month each` : ''}</span></div>
+      <div class="panel-body flush">
+      ${cov.length ? html`<div class="list">${cov.map(covRow)}</div>` : ''}
+      <div class="table-wrap"><table class="t"><thead><tr><th>Year</th>${dd.partners.map((p) => html`<th class="num">${p}</th>`)}</tr></thead>
+      <tbody>${dd.rows.map((r) => html`<tr><td data-label=""><b>${r.year}</b></td>${dd.partners.map((p) => html`<td class="num" data-label="${p}">${r.by[p] ? money0(r.by[p]) : '—'}</td>`)}</tr>`)}
+      <tr><td data-label=""><b>Last paid</b></td>${dd.partners.map((p) => html`<td class="num small" data-label="${p}">${fmt.date(dd.last[p], { year: true })}${stopped(p) && !cov.length ? html`<br><span class="pill neutral">Stopped</span>` : ''}</td>`)}</tr></tbody></table></div>
+      ${pays.length ? html`<details class="disclosure"><summary>Payments <span class="badge">${pays.length}</span></summary><div class="table-wrap"><table class="t">
+        <thead><tr><th>Date</th><th>Partner</th><th>For</th><th class="num">Amount</th></tr></thead><tbody>${pays.map(payRow)}</tbody></table></div></details>` : ''}
+      </div></div>`;
+  }
+
+  // the property account month by month, like its sheet: income, costs, deposits, owner payouts, net, ending balance
+  function cashflowPanel(cf, year) {
+    const ms = [...cf.months].reverse();
+    const SRCM = (x) => (x.sources.includes('sheet') ? (x.sources.includes('bank') ? 'Sheet + bank' : 'Sheet') : x.sources.includes('bank') ? 'Bank' : 'Entered');
+    const sum = (k) => ms.reduce((a, x) => a + (x[k] || 0), 0);
+    const row = (x) => html`<tr><td class="nowrap"><b>${fmt.month(x.month, { short: true })}</b>${x.flags.length || x.sheet_differs ? html` <span class="pill warn" title="See Sheet vs bank">Check</span>` : ''}</td>
+      <td class="num" data-label="In">${x.income ? money0(x.income) : '—'}</td>
+      <td class="num" data-label="Costs">${x.expenses ? '−' + fmt.money(x.expenses, { cents: false }) : '—'}</td>
+      <td class="num hide-sm" data-label="Deposits">${x.deposits ? (x.deposits > 0 ? '+' : '−') + money0(Math.abs(x.deposits)) : '—'}</td>
+      <td class="num" data-label="Owners">${x.take_home ? '−' + money0(x.take_home) : '—'}</td>
+      <td class="num key ${x.net > 0 ? 'pos' : ''}">${x.net > 0 ? '+' : x.net < 0 ? '−' : ''}${money0(Math.abs(x.net))}</td>
+      <td class="num" data-label="Balance">${x.end !== null && x.end !== undefined ? fmt.money(x.end) : '—'}${x.sheet_differs ? html`<span class="small warn-text" style="display:block">sheet ${fmt.money(x.sheet_balance)}</span>` : ''}</td>
+      <td class="hide-sm small ink2">${SRCM(x)}</td></tr>`;
+    const head = html`<thead><tr><th>Month</th><th class="num">Income</th><th class="num">Expenses</th><th class="num hide-sm">Deposits</th><th class="num">Owners</th><th class="num">Net</th><th class="num">Balance</th><th class="hide-sm">From</th></tr></thead>`;
+    const bc = cf.bank_check;
+    const n = 12;
+    return html`<section class="panel span-12" id="cashflow"><div class="panel-head"><h2>Cash flow by month</h2>
+        <span class="sub">${year || 'All years'} · income, operating costs, security deposits (in − refunded) and owner payouts; the balance rolls forward from the sheet’s opening balance${cf.sheet_through ? ` (sheet through ${fmt.month(cf.sheet_through)}, bank after)` : ''}</span></div>
+      <div class="panel-body flush">
+      ${bc ? html`<p class="small ${bc.differs ? 'warn-text' : 'ink2'}" style="margin:0 0 8px">${bc.differs ? `Rolled balance ${fmt.money(bc.rolled)} vs the bank’s ${fmt.money(bc.balance)} on ${fmt.date(bc.as_of, { year: true })}` : `Rolled balance matches the bank: ${fmt.money(bc.balance)} on ${fmt.date(bc.as_of, { year: true })}`}</p>` : ''}
+      <div class="table-wrap"><table class="t cf">${head}<tbody>${ms.slice(0, n).map(row)}</tbody>
+        <tfoot><tr><td><b>${ms.length} months</b></td><td class="num" data-label="In">${money0(sum('income'))}</td><td class="num" data-label="Costs">−${money0(sum('expenses'))}</td>
+          <td class="num hide-sm" data-label="Deposits">${sum('deposits') ? money0(sum('deposits')) : '—'}</td><td class="num" data-label="Owners">−${money0(sum('take_home'))}</td>
+          <td class="num key">${sum('net') < 0 ? '−' : '+'}${money0(Math.abs(sum('net')))}</td><td></td><td class="hide-sm"></td></tr></tfoot></table></div>
+      ${ms.length > n ? html`<details class="disclosure"><summary>${ms.length - n} earlier months</summary><div class="table-wrap"><table class="t cf">${head}<tbody>${ms.slice(n).map(row)}</tbody></table></div></details>` : ''}
+      ${ms.length ? '' : F.empty('No activity in this period')}</div></section>`;
+  }
+
+  // operating expenses by category, one column per year
+  function expYearPanel(ey) {
+    const ys = ey.years;
+    return html`<section class="panel span-7"><div class="panel-head"><h2>Expenses by category</h2><span class="sub">Per year · sheet lines, then bank</span></div>
+      <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Category</th>${ys.map((y) => html`<th class="num">${y}</th>`)}<th class="num">Total</th></tr></thead>
+      <tbody>${ey.categories.map((c) => html`<tr><td>${c.name}</td>${ys.map((y) => html`<td class="num" data-label="${y}">${c.by[y] ? money0(c.by[y]) : '—'}</td>`)}<td class="num key">${money0(c.total)}</td></tr>`)}</tbody>
+      <tfoot><tr><td><b>Total</b></td>${ys.map((y) => html`<td class="num" data-label="${y}"><b>${money0(ey.totals[y] || 0)}</b></td>`)}<td class="num key">${money0(ys.reduce((a, y) => a + (ey.totals[y] || 0), 0))}</td></tr></tfoot></table></div>
+      ${ey.categories.length ? '' : F.empty('No expenses recorded')}</div></section>`;
+  }
+
+  // lines the sheet and the bank disagree on, inferred amounts and open questions, by month
+  function checkPanel(cf) {
+    const items = [];
+    for (const m of [...cf.months].reverse()) {
+      if (m.sheet_differs) items.push({ month: m.month, text: `Sheet ending balance ${fmt.money(m.sheet_balance)}; with the bank rows the balance is ${fmt.money(m.end)}`, amount: null });
+      for (const f of m.flags) items.push({ month: m.month, text: `${f.description}${f.person ? ` (${f.person})` : ''}: ${f.flag}`, amount: f.amount, cat: f.category });
+    }
+    return html`<section class="panel span-5"><div class="panel-head"><h2>Sheet vs bank</h2><span class="sub">${items.length} to look at · inferred or unclear lines and months where they disagree</span></div>
+      <div class="panel-body flush">${items.length ? html`<div class="list">${items.slice(0, 8).map((x) => html`<div class="list-item"><div class="main-col"><span class="title">${fmt.month(x.month, { short: true })}${x.cat ? ` · ${x.cat}` : ''}</span><span class="meta wrap">${x.text}</span></div>${x.amount !== null ? html`<span class="amount">${fmt.money(x.amount)}</span>` : ''}</div>`)}</div>
+        ${items.length > 8 ? html`<details class="disclosure"><summary>${items.length - 8} more</summary><div class="list">${items.slice(8).map((x) => html`<div class="list-item"><div class="main-col"><span class="title">${fmt.month(x.month, { short: true })}${x.cat ? ` · ${x.cat}` : ''}</span><span class="meta wrap">${x.text}</span></div>${x.amount !== null ? html`<span class="amount">${fmt.money(x.amount)}</span>` : ''}</div>`)}</div></details>` : ''}`
+        : F.empty('The sheet and the bank agree')}</div></section>`;
   }
   function bankPanel(pr, txns) {
     const row = (t) => html`<tr class="clickable" data-btxn="${t.txn_id}" tabindex="0"><td class="nowrap">${fmt.date(t.posted_date, { year: true })}</td><td>${t.merchant_name}${t.person ? html` <span class="pill neutral">${t.person}</span>` : ''}</td>
@@ -166,9 +250,10 @@
         <section class="panel span-8"><div class="panel-head"><h2>Month by month</h2><span class="sub">Income up, costs down; the line is cash flow</span></div>
           <div class="panel-body"><div class="chart h-260" id="pl-chart"></div>${F.legend([{ label: 'Income', color: F.css('--accent') }, { label: 'Expenses', color: F.css('--ink') }, { label: 'Mortgage', color: F.css('--faint') }, { label: 'Cash flow', color: F.css('--s2'), type: 'line' }])}</div></section>
         <section class="panel span-4"><div class="panel-head"><h2>Where the money goes</h2></div><div class="panel-body flush">${cats.length ? F.hbars(cats.map((c) => ({ label: c.name, value: c.total })), { valueFmt: (v) => fmt.amt(v, { cents: false }) }) : F.empty('No expenses recorded')}</div></section>
+        ${d.cashflow ? html`${cashflowPanel(d.cashflow, year)}${expYearPanel(d.cashflow.expenses_by_year)}${checkPanel(d.cashflow)}` : ''}
         <section class="panel span-8"><div class="panel-head"><h2>Ledger</h2><span class="sub">${d.pnl.lines.length} entries</span></div>
           <div class="panel-body flush"><div class="table-wrap" style="max-height:560px;overflow-y:auto"><table class="t"><thead><tr><th>Date</th><th>Description</th><th class="hide-sm">Category</th><th>Source</th><th class="num">Amount</th></tr></thead>
-          <tbody>${d.pnl.lines.map((l, i) => html`<tr class="${l.source !== 'sheet' ? 'clickable' : ''}" data-line="${i}" ${l.source !== 'sheet' ? raw('tabindex="0"') : ''}><td class="nowrap">${fmt.date(l.date, { year: true })}</td><td>${l.description}${l.flagged ? html` <span class="pill warn">${l.flagged}</span>` : ''}${l.receipt_url ? html` <span class="pill info">Receipt</span>` : ''}</td>
+          <tbody>${d.pnl.lines.map((l, i) => html`<tr class="${l.source !== 'sheet' ? 'clickable' : ''}" data-line="${i}" ${l.source !== 'sheet' ? raw('tabindex="0"') : ''}><td class="nowrap">${fmt.date(l.date, { year: true })}</td><td>${l.description}${l.flagged ? html` <span class="pill warn" title="${l.flagged}">${l.flagged.length > 24 ? 'Check' : l.flagged}</span>` : ''}${l.receipt_url ? html` <span class="pill info">Receipt</span>` : ''}</td>
             <td class="hide-sm">${l.category}</td><td data-label=""><span class="pill ${SRC[l.source][0]}">${SRC[l.source][1]}</span></td><td class="num key ${l.kind === 'income' ? 'pos' : ''}">${l.kind === 'income' ? '+' : '−'}${fmt.amt(Math.abs(l.amount))}</td></tr>`)}</tbody></table></div>
           ${d.pnl.lines.length ? '' : F.empty('Nothing recorded for this period')}</div></section>
         <section class="span-4 stack">

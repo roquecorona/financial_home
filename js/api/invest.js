@@ -224,7 +224,15 @@
   const LEDGER_CATS = {
     rent: 'Rent', rent_section8: 'Rent (Section 8)', rent_tenant: 'Rent (tenant)', other_income: 'Other income',
     mortgage: 'Mortgage', hoa: 'HOA',
+    // itemized property sheets (a property with its own bank account, e.g. a co-owned one): one type per expense kind
+    lawn: 'Lawn care', hvac: 'AC / HVAC', appliance: 'Appliances', plumbing: 'Plumbing', electrical: 'Electrical',
+    repairs: 'Repairs & maintenance', cleaning: 'Cleaning & turnover', locksmith: 'Locksmith', insurance: 'Insurance',
+    property_tax: 'Property tax', utilities: 'Utilities', fees: 'Fees & filings', other_expense: 'Other',
   };
+  // ledger rows outside the P&L: security deposits held for tenants, and money paid out to the owners (a payout, or a
+  // personal charge made from the property's account that counts against that owner's share)
+  const LEDGER_DEPOSIT = new Set(['deposit_in', 'deposit_refund']);
+  const LEDGER_OWNER = new Set(['owner_distribution', 'owner_draw']);
 
   function property_pnl(p, year = null) {
     const H = h();
@@ -236,6 +244,7 @@
     const sheet_months = new Set();
     for (const r of Q(`SELECT * FROM property_ledger WHERE property IN (${ph})`, names)) {
       const typ = (r.type || '').toLowerCase();
+      if (LEDGER_DEPOSIT.has(typ) || LEDGER_OWNER.has(typ)) { sheet_months.add(r.month); continue; }
       const kind = (typ.startsWith('rent') || typ === 'other_income') ? 'income' : typ === 'mortgage' ? 'debt' : 'expense';
       const cat = Object.prototype.hasOwnProperty.call(LEDGER_CATS, typ) ? LEDGER_CATS[typ] : 'Repairs & other';
       const date = (r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date)) ? r.date : H.month_end(r.month);
@@ -339,24 +348,154 @@
     ex.bank_balance = ex.bank_accounts.length ? r2(H.pysum(ex.bank_accounts.map((a) => a.balance || 0))) : null;
     return ex;
   }
-  // owner distributions paid out of the property's account: per partner per year (Transfer / Owner distribution)
-  function property_distributions(p) {
+  // owner distributions: the property's sheet ledger (owner_distribution / owner_draw rows, with the months each payment
+  // covers) plus bank payouts (Transfer / Owner distribution) the ledger has not reconciled (property_ledger.txn_id).
+  // Per partner per year, the payments, and per partner the months covered, gaps and months not yet paid.
+  function ledger_rows(p) {
+    const names = [...new Set([p.ledger_name || p.name, p.name])].filter((x) => x);
+    return Q(`SELECT * FROM property_ledger WHERE property IN (${names.map(() => '?').join(',')}) ORDER BY month, entry_id`, names);
+  }
+  function property_distributions(p, led = null) {
+    const H = h();
     const ent = p.entity || p.name;
-    const rs = Q(`SELECT COALESCE(t.person,'Unassigned') AS person, substr(t.posted_date,1,4) AS year, -SUM(t.amount) AS amount,
-        COUNT(*) AS n, MAX(t.posted_date) AS last FROM transactions t WHERE t.entity=? AND t.subcategory='Owner distribution'
-        AND t.posted_date IS NOT NULL GROUP BY 1, 2 ORDER BY 2 DESC, 1`, [ent]);
-    const partners = [...new Set(rs.map((r) => r.person))].sort();
-    const years = [...new Set(rs.map((r) => r.year))].sort().reverse();
+    const hasCov = db().columns('property_ledger').includes('covers');
+    led = led || (hasCov ? ledger_rows(p) : []);
+    const linked = new Set(led.filter((r) => r.txn_id).map((r) => r.txn_id));
+    const pays = [];
+    for (const r of led) {
+      if (!LEDGER_OWNER.has(r.type)) continue;
+      pays.push({ date: r.date || H.month_end(r.month), person: r.person || 'Unassigned', amount: r2(Math.abs(r.amount || 0)),
+        kind: r.type === 'owner_draw' ? 'draw' : 'distribution', covers: (r.covers || '').split(',').filter(Boolean),
+        source: r.txn_id ? 'both' : 'sheet', txn_id: r.txn_id || null, description: r.description, flagged: r.flagged || null });
+    }
+    for (const t of Q(`SELECT t.txn_id, t.posted_date, t.amount, t.description, COALESCE(t.person,'Unassigned') AS person FROM transactions t
+        WHERE t.entity=? AND t.subcategory='Owner distribution' AND t.posted_date IS NOT NULL ORDER BY t.posted_date`, [ent])) {
+      if (linked.has(t.txn_id)) continue;
+      pays.push({ date: t.posted_date, person: t.person, amount: r2(-t.amount), kind: 'distribution', covers: [], source: 'bank',
+        txn_id: t.txn_id, description: H.merchant_of(t.description), flagged: null });
+    }
+    pays.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    const partners = [...new Set(pays.map((x) => x.person))].sort();
+    const years = [...new Set(pays.map((x) => x.date.slice(0, 4)))].sort().reverse();
     const rows = years.map((y) => {
       const by = {};
-      for (const r of rs.filter((x) => x.year === y)) by[r.person] = r2(r.amount);
+      for (const x of pays.filter((z) => z.date.startsWith(y))) by[x.person] = r2((by[x.person] || 0) + x.amount);
       return { year: y, by, total: r2(Object.values(by).reduce((a, b) => a + b, 0)) };
     });
-    const last = {};
-    for (const r of rs) if (!last[r.person] || r.last > last[r.person]) last[r.person] = r.last;
-    const total = {};
-    for (const r of rs) total[r.person] = r2((total[r.person] || 0) + r.amount);
-    return { partners, years, rows, last, total };
+    const last = {}, total = {};
+    for (const x of pays) {
+      if (!last[x.person] || x.date > last[x.person]) last[x.person] = x.date;
+      total[x.person] = r2((total[x.person] || 0) + x.amount);
+    }
+    const out = { partners, years, rows, last, total };
+    if (!pays.some((x) => x.covers.length)) return out;
+    // coverage: which months each partner has been paid for. A partner with no payment in the 120 days before the latest
+    // payout has stopped; the others are owed every month after the last one covered, through this month.
+    const latest = pays.reduce((a, x) => (x.date > a ? x.date : a), '');
+    // the monthly rate: the latest payment that pays new months (a payment re-covering a paid month is flagged 'again')
+    const rated = pays.find((x) => x.kind === 'distribution' && x.covers.length && !/again/.test(x.flagged || ''));
+    const rate = rated ? r2(rated.amount / rated.covers.length) : null;
+    const now = H.this_month();
+    out.coverage = partners.filter((who) => pays.some((x) => x.person === who && x.covers.length)).map((who) => {
+      const mine = pays.filter((x) => x.person === who);
+      const cov = [...new Set(mine.flatMap((x) => x.covers))].sort();
+      const first = cov[0], thru = cov[cov.length - 1];
+      const gaps = [];
+      for (let m = first; m < thru; m = H.add_months(m, 1)) if (!cov.includes(m)) gaps.push(m);
+      const stopped = (Date.parse(latest) - Date.parse(last[who])) / 864e5 > 120;
+      const behind = [];
+      if (!stopped) for (let m = H.add_months(thru, 1); m <= now; m = H.add_months(m, 1)) behind.push(m);
+      return {
+        person: who, first, covered_through: thru, months_covered: cov.length, gaps, behind, stopped,
+        owed_estimate: rate && (behind.length + gaps.length) ? r2(rate * (behind.length + gaps.length)) : 0,
+        unallocated: r2(H.pysum(mine.filter((x) => x.kind === 'distribution' && !x.covers.length).map((x) => x.amount))),
+        draws: r2(H.pysum(mine.filter((x) => x.kind === 'draw').map((x) => x.amount))),
+        batches: mine.filter((x) => x.covers.length > 1).length, payments: mine.length,
+      };
+    });
+    out.rate = rate;
+    out.payments = pays.slice(0, 200);
+    return out;
+  }
+
+  // month-by-month cash flow of a property with its own account, like its sheet: income, operating expenses, security
+  // deposits (in - refunded), owner payouts, net, and the account's ending balance. The balance rolls forward from the
+  // sheet's opening balance (sheet_cash_balances of the property's accounts); a month whose sheet balance differs from the
+  // rolled one is flagged and the rolled (bank-consistent) figure carries on. Expense totals by category per year too.
+  function property_cashflow(p, led) {
+    const H = h();
+    if (!led.some((r) => LEDGER_OWNER.has(r.type))) return null;
+    const ent = p.entity || p.name;
+    const pnl = property_pnl(p, null);
+    const months = {};
+    const M = (m) => months[m] || (months[m] = { month: m, income: 0, expenses: 0, debt: 0, deposits: 0, take_home: 0, sources: new Set(), flags: [] });
+    for (const mm of pnl.months) {
+      const x = M(mm.month);
+      x.income += mm.income; x.expenses += mm.expense; x.debt += mm.debt;
+      for (const s of mm.sources) x.sources.add(s);
+    }
+    const linked = new Set(led.filter((r) => r.txn_id).map((r) => r.txn_id));
+    for (const r of led) {
+      const typ = (r.type || '').toLowerCase();
+      if (LEDGER_DEPOSIT.has(typ)) M(r.month).deposits += typ === 'deposit_in' ? Math.abs(r.amount || 0) : -Math.abs(r.amount || 0);
+      else if (LEDGER_OWNER.has(typ)) M(r.month).take_home += Math.abs(r.amount || 0);
+      if (r.flagged) M(r.month).flags.push({ type: typ, category: LEDGER_CATS[typ] || (LEDGER_OWNER.has(typ) ? 'Owners' : LEDGER_DEPOSIT.has(typ) ? 'Deposit' : typ),
+        date: r.date, amount: r2(Math.abs(r.amount || 0)), description: r.description, person: r.person || null, flag: r.flagged });
+      if (LEDGER_DEPOSIT.has(typ) || LEDGER_OWNER.has(typ)) M(r.month).sources.add('sheet');
+    }
+    for (const t of Q(`SELECT txn_id, posted_date, amount FROM transactions WHERE entity=? AND subcategory='Owner distribution'
+        AND posted_date IS NOT NULL`, [ent])) {
+      if (linked.has(t.txn_id)) continue;
+      const x = M(t.posted_date.slice(0, 7));
+      x.take_home += -t.amount; x.sources.add('bank');
+    }
+    const accts = p.entity ? Q('SELECT account_id FROM accounts WHERE entity=? AND COALESCE(include_in_totals,1)=0', [p.entity]).map((r) => r.account_id) : [];
+    const sheet = {};
+    if (accts.length) {
+      for (const r of Q(`SELECT month, SUM(balance) AS b FROM sheet_cash_balances WHERE account IN (${accts.map(() => '?').join(',')})
+          GROUP BY month, source ORDER BY month, source`, accts)) if (!(r.month in sheet)) sheet[r.month] = r.b;
+    }
+    const keys = Object.keys(months).sort();
+    let prev = keys.length && sheet[H.add_months(keys[0], -1)] !== undefined ? sheet[H.add_months(keys[0], -1)] : null;
+    const rows = keys.map((k) => {
+      const x = months[k];
+      for (const f of ['income', 'expenses', 'debt', 'deposits', 'take_home']) x[f] = r2(x[f]);
+      x.net = r2(x.income + x.deposits - x.expenses - x.debt - x.take_home);
+      x.start = prev === null ? null : r2(prev);
+      x.end = prev === null ? (sheet[k] ?? null) : r2(prev + x.net);
+      x.sheet_balance = sheet[k] ?? null;
+      x.sheet_differs = x.sheet_balance !== null && x.end !== null && Math.abs(x.end - x.sheet_balance) >= 1;
+      prev = x.sheet_balance !== null && !x.sheet_differs ? x.sheet_balance : x.end;
+      x.sources = [...x.sources].sort();
+      return x;
+    });
+    // the latest month against the account's own latest balance (bank)
+    const bal = (p.bank_accounts || []).filter((a) => a.balance !== null && a.balance !== undefined && a.as_of);
+    const asOf = bal.reduce((a, x) => (x.as_of > a ? x.as_of : a), '');
+    const lastRow = rows[rows.length - 1];
+    const bank_check = bal.length && lastRow && asOf.slice(0, 7) === lastRow.month && lastRow.end !== null
+      ? { as_of: asOf, balance: r2(H.pysum(bal.map((a) => a.balance))), rolled: lastRow.end } : null;
+    if (bank_check) bank_check.differs = Math.abs(bank_check.balance - bank_check.rolled) >= 1;
+    // operating expenses by category per year
+    const ys = [...new Set(pnl.lines.map((l) => l.month.slice(0, 4)))].sort();
+    const cat = new Map();
+    // bank subcategories that name the same thing as a sheet category
+    const SAME = { 'Lawn & cleaning': 'Lawn care', 'Utilities & services': 'Utilities', 'Insurance & escrow': 'Insurance' };
+    for (const l of pnl.lines) {
+      if (l.kind !== 'expense') continue;
+      const name = SAME[l.category] || l.category;
+      const c = cat.get(name) || {};
+      c[l.month.slice(0, 4)] = (c[l.month.slice(0, 4)] || 0) + l.amount;
+      cat.set(name, c);
+    }
+    const by_cat = [...cat.entries()].map(([name, by]) => {
+      for (const y of Object.keys(by)) by[y] = r2(by[y]);
+      return { name, by, total: r2(Object.values(by).reduce((a, b) => a + b, 0)) };
+    }).sort((a, b) => b.total - a.total || (a.name < b.name ? -1 : 1));
+    const yearTotals = {};
+    for (const y of ys) yearTotals[y] = r2(H.pysum(by_cat.map((c) => c.by[y] || 0)));
+    return { months: rows, bank_check, expenses_by_year: { years: ys, categories: by_cat, totals: yearTotals },
+      sheet_through: Object.keys(sheet).sort().pop() || null };
   }
 
   function api_properties(q) {
@@ -428,8 +567,14 @@
           WHERE t.account_id IN (${ids.map(() => '?').join(',')})${yw} ORDER BY t.posted_date DESC, t.txn_id LIMIT 300`,
       [...ids, ...(year ? [`${year}-01-01`, `${year}-12-31`] : [])]);
     }
-    const dist = property_distributions(p);
+    const led = db().columns('property_ledger').includes('covers') ? ledger_rows(p) : [];
+    const dist = property_distributions(p, led);
     if (dist.rows.length) out.distributions = dist;
+    const cf = led.length ? property_cashflow(p, led) : null;
+    if (cf) {
+      if (year) cf.months = cf.months.filter((m) => m.month.startsWith(year));
+      out.cashflow = cf;
+    }
     return out;
   }
 
@@ -562,7 +707,7 @@
   }
 
   // ---------------------------------------------------------------- registration
-  Object.assign(G.H, { latest_holdings, asset_class_of, property_pnl, mortgage_balance, property_share, property_extras, property_distributions });
+  Object.assign(G.H, { latest_holdings, asset_class_of, property_pnl, mortgage_balance, property_share, property_extras, property_distributions, property_cashflow });
   Object.assign(G.API.get, {
     '/api/investments': api_investments, '/api/properties': api_properties, '/api/property': api_property,
   });
