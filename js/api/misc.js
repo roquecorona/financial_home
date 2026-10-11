@@ -425,7 +425,7 @@
     const groups = new Map();  // identical patches are written together (one request per distinct patch)
     for (const t of H.Q(`SELECT t.txn_id, t.description, t.merchant, t.memo, t.account_id, t.category, t.subcategory, t.entity, t.tags
             FROM transactions t JOIN accounts a USING(account_id) WHERE COALESCE(t.tags,'') NOT LIKE '%manual%'
-            AND a.type NOT IN ('ira','hsa','401k','403b','brokerage')`)) {
+            AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529')`)) {
       for (const [rx, r] of rules) {
         rx.lastIndex = 0;
         if (rx.test(rule_field_value(r.field, t) || '')) {

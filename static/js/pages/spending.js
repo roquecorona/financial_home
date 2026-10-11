@@ -12,7 +12,7 @@ F.pages.spending = async (root, r, ctl) => {
   const slotCats = Object.keys(slots).sort((a, b) => slots[a] - slots[b]);
   const others = d.categories.filter((c) => !(c.category in slots)).map((c) => c.category);
   const rangeLabel = `${fmt.date(d.start, { year: true })} – ${fmt.date(d.end, { year: true })}`;
-  const accounts = F.meta.accounts.filter((a) => !['ira', 'hsa', '401k', '403b', 'brokerage'].includes(a.type));
+  const accounts = F.meta.accounts.filter((a) => !['ira', 'hsa', '401k', '403b', 'brokerage', '529'].includes(a.type));
   const totalBudget = d.budgets.reduce((s, b) => s + (b.monthly || 0), 0);
   const sel = (name, label, opts, cur) => html`<select class="input sm" data-p="${name}" aria-label="${label}"><option value="">${label}</option>${opts.map(([v, l]) => html`<option value="${v}" ${v === cur ? raw('selected') : ''}>${l}</option>`)}</select>`;
 

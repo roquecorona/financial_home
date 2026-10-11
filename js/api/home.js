@@ -10,7 +10,7 @@
   API.del = API.del || {};
   const DB = () => G.DB;
 
-  const INVEST_TYPES = ['ira', 'hsa', '401k', '403b', 'brokerage'];
+  const INVEST_TYPES = ['ira', 'hsa', '401k', '403b', 'brokerage', '529'];
 
   // ---- small local utilities (date math on ISO strings, Python-compatible formatting) ----
   const has = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k);
@@ -118,6 +118,7 @@
       const d = me < t ? me : t;
       let assets = 0.0, liab = 0.0, cash = 0.0, cards = 0.0, invest = 0.0, loans = 0.0;
       const missing = [];
+      const valued = new Set();
       for (const a of accts) {
         const aid = a.account_id;
         let v;
@@ -127,6 +128,7 @@
           if (has(material, aid) ? material[aid] : true) missing.push(a.label);
           continue;
         }
+        valued.add(aid);
         const g = a.group;
         if (g === 'cash') cash += v;
         else if (g === 'cards') cards += -v;
@@ -135,6 +137,10 @@
         else assets += v;
       }
       for (const ma of mans) {
+        // a hand-tracked debt now covered by a synced account ("[synced:<account_id>]" in its notes) only fills months
+        // the synced account has no value for, so the two are never counted together
+        const rep = /\[synced:([\w.-]+)\]/.exec(ma.notes || '');
+        if (rep && valued.has(rep[1])) continue;
         const v = H.manual_value(ma, d, mpts.get(ma.id))[0];
         if (v == null) {
           if (pyTrue(ma.include_in_totals)) missing.push(ma.name);
@@ -229,7 +235,7 @@
     const t = todayS();
     const since = addDays(t, -90);
     const n = db.one(`SELECT COUNT(*) FROM transactions t JOIN accounts a USING(account_id) WHERE t.posted_date>=? AND t.is_transfer=0
-        AND (t.category IS NULL OR t.category IN ('','Uncategorized')) AND a.type NOT IN ('ira','hsa','401k','403b','brokerage')`, [since]);
+        AND (t.category IS NULL OR t.category IN ('','Uncategorized')) AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529')`, [since]);
     if (n) {
       out.push({ level: 'warning', kind: 'uncategorized', title: `${n} transaction${n !== 1 ? 's need' : ' needs'} a category`,
         detail: 'From the last 90 days', link: '#/spending?category=__none__&preset=all' });
@@ -264,7 +270,7 @@
     const thrRaw = H.setting('large_txn_threshold', '1000');
     const thr = parseFloat(pyTrue(thrRaw) ? thrRaw : 1000);
     const big = db.Q(`SELECT t.txn_id, t.amount, t.description, t.posted_date FROM transactions t JOIN accounts a USING(account_id)
-        WHERE t.posted_date>=? AND t.is_transfer=0 AND ABS(t.amount)>=? AND a.type NOT IN ('ira','hsa','401k','403b','brokerage')
+        WHERE t.posted_date>=? AND t.is_transfer=0 AND ABS(t.amount)>=? AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529')
         ORDER BY t.posted_date DESC LIMIT 5`, [addDays(t, -7), thr]);
     for (const b of big) {
       out.push({ level: 'info', kind: 'large', title: `Large ${b.amount > 0 ? 'deposit' : 'charge'}: $${pyFmt(Math.abs(b.amount), 2)}`,
@@ -316,7 +322,7 @@
       flow6.push({ month: mm, income: i, spending: s });
     }
     const recent = db.Q(`SELECT ${H.TXN_COLS} FROM transactions t JOIN accounts a USING(account_id)
-        WHERE a.type NOT IN ('ira','hsa','401k','403b','brokerage') ORDER BY t.posted_date IS NULL DESC, t.posted_date DESC, t.created_at DESC LIMIT 10`);
+        WHERE a.type NOT IN ('ira','hsa','401k','403b','brokerage','529') ORDER BY t.posted_date IS NULL DESC, t.posted_date DESC, t.created_at DESC LIMIT 10`);
     const last_sync = db.one("SELECT MAX(as_of) FROM balances WHERE source='simplefin'");
     const last_import = db.one('SELECT MAX(imported_at) FROM imports');
     const pinned = db.Q('SELECT * FROM notes WHERE pinned=1 ORDER BY updated_at DESC, created_at DESC LIMIT 3');

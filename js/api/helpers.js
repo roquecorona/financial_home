@@ -19,11 +19,11 @@
   // ------------------------------------------------------------------------------------------------------------------
   H.MAX_BODY = 100000;
   H.USERS = ['Roque', 'Jenny'];
-  H.INVEST = ['ira', 'hsa', '401k', '403b', 'brokerage'];
+  H.INVEST = ['ira', 'hsa', '401k', '403b', 'brokerage', '529'];
   H.DEBT_TYPES = ['mortgage', 'loan', 'heloc', 'auto_loan'];
   H.CASH_TYPES = ['checking', 'savings'];
   H.ACCOUNT_TYPES = ['checking', 'savings', 'credit_card', 'store_card', 'mortgage', 'loan', 'heloc', 'auto_loan',
-    'brokerage', 'ira', '401k', '403b', 'hsa', 'other'];
+    'brokerage', 'ira', '401k', '403b', 'hsa', '529', 'other'];
   H.HOLDERS = ['Roque', 'Jennifer', 'Joint', 'Business', 'Unconfirmed'];
   H.NON_SPEND = ['Income', 'Transfer', 'Investments'];
   H.VARIABLE_BILLS = /groceries|gas, tolls|cleaning|lawn/iu;
@@ -960,8 +960,8 @@
   // shared transaction filtering
   // ------------------------------------------------------------------------------------------------------------------
   H.SPEND_SQL = `t.is_transfer=0 AND COALESCE(t.category,'') NOT IN ('Income','Transfer','Investments')
-  AND a.type NOT IN ('ira','hsa','401k','403b','brokerage') AND t.pending=0`;
-  H.INCOME_SQL = `t.category='Income' AND t.is_transfer=0 AND a.type NOT IN ('ira','hsa','401k','403b','brokerage') AND t.pending=0`;
+  AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529') AND t.pending=0`;
+  H.INCOME_SQL = `t.category='Income' AND t.is_transfer=0 AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529') AND t.pending=0`;
   H.SORTS = {
     date: 't.posted_date', amount: 't.amount', description: 't.description', category: 't.category',
     account: 'a.name', merchant: 'merchant_of(t.description)',
@@ -1024,7 +1024,7 @@
     if (kind === 'spending') w.push(H.SPEND_SQL);
     else if (kind === 'income') w.push(H.INCOME_SQL);
     else if (kind === 'transfers') w.push('t.is_transfer=1');
-    else if (kind === 'banking') w.push("a.type NOT IN ('ira','hsa','401k','403b','brokerage')");
+    else if (kind === 'banking') w.push("a.type NOT IN ('ira','hsa','401k','403b','brokerage','529')");
     if (first(q, 'pending') === '1') w.push('t.pending=1');
     const retailer = first(q, 'retailer');
     if (retailer === 'amazon' || retailer === 'target') w.push(H.RETAILER_SQL[retailer]);

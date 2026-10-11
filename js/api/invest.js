@@ -12,7 +12,7 @@
   const h = () => G.H;
   const db = () => G.DB;
 
-  const INVEST_IN = "a.type IN ('ira','hsa','401k','403b','brokerage')";
+  const INVEST_IN = "a.type IN ('ira','hsa','401k','403b','brokerage','529')";
   const ASSET_CLASSES = ['US stock', 'Intl stock', 'Bonds', 'Cash', 'Real estate', 'Other'];
 
   // ---------------------------------------------------------------- small local utilities (date math, rounding)
@@ -195,7 +195,7 @@
     }
     for (const r of Q(`SELECT t.txn_id, t.posted_date, t.amount, t.description, t.category, t.subcategory FROM transactions t
             JOIN accounts a USING(account_id) WHERE t.entity=? AND t.is_transfer=0 AND t.pending=0 AND t.posted_date IS NOT NULL
-            AND a.type NOT IN ('ira','hsa','401k','403b','brokerage')`, [ent])) {
+            AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529')`, [ent])) {
       const m = r.posted_date.slice(0, 7);
       if (sheet_months.has(m)) continue;
       const sub = r.subcategory || r.category || 'Other';

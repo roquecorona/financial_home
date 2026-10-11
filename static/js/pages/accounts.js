@@ -8,7 +8,7 @@
     ['manual_asset', 'Other assets', 'Tracked by hand'], ['manual_debt', 'Other debts', 'Tracked by hand or from the household sheet'],
   ];
   const TYPE_LABEL = { checking: 'Checking', savings: 'Savings', credit_card: 'Credit card', store_card: 'Store card', mortgage: 'Mortgage', loan: 'Loan', heloc: 'HELOC',
-    auto_loan: 'Auto loan', brokerage: 'Brokerage', ira: 'IRA', '401k': '401(k)', '403b': '403(b)', hsa: 'HSA', other: 'Other' };
+    auto_loan: 'Auto loan', brokerage: 'Brokerage', ira: 'IRA', '401k': '401(k)', '403b': '403(b)', hsa: 'HSA', '529': '529 plan', other: 'Other' };
   F.typeLabel = (t) => TYPE_LABEL[t] || fmt.label(t || '');
 
   F.pages.accounts = async (root, r, ctl) => {
