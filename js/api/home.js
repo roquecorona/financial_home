@@ -343,7 +343,7 @@
         WHERE a.type NOT IN ('ira','hsa','401k','403b','brokerage','529') ORDER BY t.posted_date IS NULL DESC, t.posted_date DESC, t.created_at DESC LIMIT 10`);
     const last_sync = db.one("SELECT MAX(as_of) FROM balances WHERE source='simplefin'");
     const last_import = db.one('SELECT MAX(imported_at) FROM imports');
-    const pinned = db.Q('SELECT * FROM notes WHERE pinned=1 ORDER BY updated_at DESC, created_at DESC LIMIT 3');
+    const pinned = db.Q("SELECT * FROM notes WHERE pinned=1 AND (target_type IS NULL OR target_type IN ('', 'month', 'general')) ORDER BY updated_at DESC, created_at DESC LIMIT 3");
     return { totals, month: m, last_month: lm, income: inc, spending: sp, last_income: linc, last_spending: lsp,
       pace: { this: H.daily_cumulative_spend(m), last: H.daily_cumulative_spend(lm) },
       networth: nw, flow: flow6, upcoming: H.upcoming_items(), alerts: H.alerts(), recent,
