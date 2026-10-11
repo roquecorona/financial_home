@@ -329,7 +329,7 @@
             ${t.order_candidates.filter((c) => !t.orders.some((o) => o.order_id === c.order_id)).length ? html`<div class="${t.orders.length ? 'caption' : ''}" style="margin-top:${t.orders.length ? 10 : 0}px">${t.orders.length ? 'Another order belongs here?' : 'Orders placed around this date:'}</div>
               <div class="list" style="margin-top:6px">${t.order_candidates.filter((c) => !t.orders.some((o) => o.order_id === c.order_id)).map((c) => html`<div class="list-item"><div class="main-col"><div class="title">${c.first_item || c.label}</div>
               <div class="meta">${c.label} · ${fmt.date(c.order_date)} · ${c.items} item${c.items === 1 ? '' : 's'}</div></div><span class="amount">${fmt.money(c.total)}</span><button class="btn xs" data-link="${c.order_id}">Link</button></div>`)}</div>`
-            : (!t.orders.length ? html`<p class="small muted">No ${fmt.label(t.retailer)} orders within a month of this charge. Import your order history with scripts/ingest_orders.py.</p>` : '')}</section>` : ''}
+            : (!t.orders.length ? html`<p class="small muted">No ${fmt.label(t.retailer)} orders within a month of this charge. Older orders show up here once their order history is imported.</p>` : '')}</section>` : ''}
           ${t.is_transfer ? '' : html`<section id="d-split"></section>`}
           <section><h3>Notes</h3>${t.notes ? html`<div class="callout" style="margin-bottom:10px">${icon('note')}<div><div class="small muted">Earlier note</div>${t.notes}</div></div>` : ''}<div id="d-notes"></div></section>
           <section><h3>Details</h3><dl class="kv">
@@ -455,3 +455,46 @@ F.people = () => {
   } catch { /* DB not ready */ }
   return [...out];
 };
+
+/* ---------- account details: opened/closed, limit, APR, statement day, due day, minimum, autopay, fee, rewards, promo ----------
+   Each detail from the API is {v, s, d}: value, where it came from (statement, sheet, sync, manual, first-seen, last-seen) and
+   the as-of date. Pages show the value; the source is a quiet caption. */
+(function () {
+  const { html, fmt } = F;
+  const ord = (n) => { const v = n % 100; return n + (['th', 'st', 'nd', 'rd'][(v - 20) % 10] || ['th', 'st', 'nd', 'rd'][v] || 'th'); };
+  F.ordinal = ord;
+  // 2019 · 05.2019 · 05.14.2019
+  F.detailDate = (v) => (!v ? '—' : v.length === 4 ? v : v.length === 7 ? `${v.slice(5, 7)}.${v.slice(0, 4)}` : fmt.date(v, { year: true }));
+  F.detailSource = (x) => {
+    if (!x) return '';
+    const on = x.d ? ` ${x.d.length === 7 ? F.detailDate(x.d) : fmt.date(x.d, { year: true })}` : '';
+    return { statement: `Statement${on}`, sheet: `Household sheet${on}`, sync: `Bank${on}`, manual: `Entered${x.d ? on : ' by hand'}`,
+      'first-seen': 'First seen in our records', 'last-seen': 'Last activity' }[x.s] || '';
+  };
+  const promoTxt = (p) => `${p.rate !== null && p.rate !== undefined ? +p.rate : 0}% until ${fmt.date(p.end, { year: true })} · ${p.ended ? 'ended' : `${p.days_left} day${p.days_left === 1 ? '' : 's'}`}`;
+  F.promoText = promoTxt;
+  /** Promo APR chip ("0% until 04.01.2027 · 172 days"); red once ended, amber within 60 days. */
+  F.promoChip = (p, extra = '') => (p && p.balance > 0.005 ? html`<span class="pill ${p.ended ? 'crit' : p.soon ? 'warn' : 'neutral'} promo-chip" title="Promotional APR ${promoTxt(p)}${p.note ? ' — ' + p.note : ''}" ${extra}>${promoTxt(p)}</span>` : '');
+  /** Compact chips for an account row: cards → promo, limit, due day; loans → due day, rate; others → opened. */
+  F.detailChips = (a) => {
+    const d = a.details;
+    if (!d) return '';
+    const out = [];
+    const isCard = a.group === 'cards' || a.type === 'credit_card' || a.type === 'store_card';
+    if (isCard) {
+      if (d.promo) out.push(F.promoChip(d.promo));
+      if (d.credit_limit) out.push(html`<span class="dchip">Limit ${fmt.money(d.credit_limit.v, { compact: true, cents: false })}</span>`);
+      if (d.due_day) out.push(html`<span class="dchip">Due ${ord(d.due_day.v)}</span>`);
+      if (d.apr_purchase && !(d.promo && d.promo.balance > 0.005)) out.push(html`<span class="dchip hide-sm">APR ${fmt.num(d.apr_purchase.v, 2)}%</span>`);
+    } else if (a.group === 'loans') {
+      if (d.due_day) out.push(html`<span class="dchip">Due ${ord(d.due_day.v)}</span>`);
+      if (d.apr_purchase) out.push(html`<span class="dchip">${fmt.num(d.apr_purchase.v, 2)}%</span>`);
+    }
+    if (d.closed) out.push(html`<span class="dchip hide-sm">Closed ${F.detailDate(d.closed.v)}</span>`);
+    else if (d.opened && (!isCard || out.length < 3)) out.push(html`<span class="dchip hide-sm" title="${d.opened.s === 'first-seen' ? 'Earliest date in our records, not the bank’s open date' : ''}">${d.opened.s === 'first-seen' ? 'First seen' : 'Opened'} ${F.detailDate(d.opened.v)}</span>`);
+    return out.length ? html`<span class="dchips">${out}</span>` : '';
+  };
+})();
+
+/** An account note without the bookkeeping: sentences that name files, scripts or data columns are left out. */
+F.plainNote = (t) => (t || '').split(/(?<=[.!?])\s+/).filter((x) => x && !/[\w-]+\/[\w-]|\.py\b|\b\w+\.\w+\s*=|\b[a-z]+_[a-z_]+\b|\bsource=|\bimport(ed)?\b.*\bscript|\bexport\b/i.test(x)).join(' ');

@@ -28,7 +28,7 @@
       const sparkColor = a.group === 'cards' || a.group === 'loans' || a.group === 'manual_debt' ? 'var(--ink)' : 'var(--accent)';
       const spark = a.spark && a.spark.length ? (a.group === 'cards' ? a.spark.map((x) => (x === null ? null : -x)) : a.spark) : null;
       return html`<a class="list-item" href="${href}">
-        <div class="main-col"><div class="title">${a.label}</div><div class="meta">${sub}</div></div>
+        <div class="main-col"><div class="title">${a.label}</div><div class="meta">${sub}</div>${a.manual ? '' : F.detailChips(a)}</div>
         ${!a.included && !a.manual ? html`<span class="pill neutral" title="${a.status === 'shares_balance' ? 'Shares a balance with another card' : 'Excluded from totals'}">${a.status === 'shares_balance' ? 'Shared balance' : 'Not in totals'}</span>` : ''}
         ${a.manual && !a.include_in_totals ? html`<span class="pill neutral">Not in totals</span>` : ''}
         <span class="hide-sm">${spark ? F.spark(spark, { color: sparkColor }) : ''}</span>
@@ -165,19 +165,21 @@
     const shown = (v) => (v === null || v === undefined ? null : isCard || isLoan ? -v : v);
     const last90 = d.monthly.slice(-3);
     const mIn = last90.reduce((s, m) => s + m.money_in, 0), mOut = last90.reduce((s, m) => s + m.money_out, 0);
+    const det = a.details || {};
     F.setHTML(root, html`
       ${F.head({ crumb: html`<a href="#/accounts">Accounts</a> / ${F.typeLabel(a.type)}`, title: a.label,
-        lede: html`${[a.institution, a.holder, a.last4 ? '••' + a.last4 : '', a.entity && a.entity !== 'household' ? a.entity : ''].filter(Boolean).join(' · ')}${a.status === 'shares_balance' ? ' · shares its balance with another card, so it isn’t counted in totals' : ''}`,
-        actions: html`<button type="button" class="btn" data-edit>${icon('edit')}Edit details</button>${isInv ? html`<a class="btn" href="#/investments?accounts=${encodeURIComponent(a.account_id)}">Performance</a>` : ''}${isCard ? html`<a class="btn" href="#/cards">Pay cards</a>` : ''}` })}
+        lede: html`${[a.institution, a.holder, a.last4 ? '••' + a.last4 : '', a.entity && a.entity !== 'household' ? a.entity : ''].filter(Boolean).join(' · ')}${a.status === 'shares_balance' ? ' · shares its balance with another card, so it isn’t counted in totals' : ''}${det.promo && det.promo.balance > 0.005 ? html` ${F.promoChip(det.promo)}` : ''}`,
+        actions: html`<button type="button" class="btn" data-edit>${icon('edit')}Name, type…</button>${isInv ? html`<a class="btn" href="#/investments?accounts=${encodeURIComponent(a.account_id)}">Performance</a>` : ''}${isCard ? html`<a class="btn" href="#/cards">Pay cards</a>` : ''}` })}
       <section class="band" style="--n:4" aria-label="Summary">
-        ${F.kpi(isCard ? 'Owed' : isLoan ? 'Balance owed' : 'Balance', F.kpiMoney(shown(a.balance)), html`${a.as_of ? 'As of ' + fmt.date(a.as_of, { year: true }) : 'No balance yet'}${a.balance_source ? ' · ' + a.balance_source : ''}`)}
-        ${isInv ? html`${F.kpi('Contributions on record', F.kpiMoney(a.contributions_all), 'From transactions and snapshots')}
+        ${F.kpi(isCard ? 'Owed' : isLoan ? 'Balance owed' : 'Balance', F.kpiMoney(shown(a.balance)), html`${a.as_of ? 'As of ' + fmt.date(a.as_of, { year: true }) : 'No balance yet'}${a.balance_source === 'manual snapshot' ? ' · entered by hand' : ''}`)}
+        ${isInv ? html`${F.kpi('Contributions on record', F.kpiMoney(a.contributions_all), 'Including past balances you entered')}
           ${F.kpi('Holdings', String((a.holdings || []).length), (a.holdings || []).length ? 'As of ' + fmt.date(a.holdings[0].as_of) : 'No detail from the sync')}`
         : html`${F.kpi('In · 3 months', F.kpiMoney(mIn), 'Including transfers')}${F.kpi('Out · 3 months', F.kpiMoney(-mOut), 'Including payments')}`}
         ${F.kpi('Transactions', fmt.num(d.txn_count), d.first ? `${fmt.date(d.first, { year: true })} – ${fmt.date(d.last, { year: true })}` : 'None yet')}
       </section>
+      ${detailsSection(a, det, isCard, isLoan)}
       <div class="grid">
-        <section class="span-8">${F.secHead(isCard ? 'Amount owed over time' : 'Balance over time', { sub: isInv ? 'Synced balances and snapshots' : 'Rebuilt from transactions, anchored to synced balances' })}
+        <section class="span-8">${F.secHead(isCard ? 'Amount owed over time' : 'Balance over time', { sub: isInv ? 'Bank balances and past statements' : 'Rebuilt from transactions, anchored to synced balances' })}
           <div class="panel-body"><div class="chart h-260" id="bal-chart"></div></div></section>
         <section class="panel span-4"><div class="panel-head"><h2>Account notes</h2></div><div class="panel-body" id="acct-notes"></div></section>
         ${!isInv ? html`<section class="panel span-6"><div class="panel-head"><h2>Money in and out by month</h2></div><div class="panel-body"><div class="chart h-220" id="io-chart"></div>
@@ -189,6 +191,7 @@
           ${(a.holdings || []).length ? '' : F.empty('No holdings detail', 'The sync only reports this account’s total.')}</div></section>`}
         <section class="panel span-12" id="acct-txns"></section>
       </div>`);
+    $('[data-edit-details]', root).onclick = () => detailsModal(a, det, isCard, isLoan);
     F.notesBlock($('#acct-notes', root), 'account', a.account_id, d.notes, { placeholder: 'e.g. Autopay set to statement balance on the 25th' });
     F.txnTable($('#acct-txns', root), { base: { account: a.account_id }, state: { preset: 'all', kind: 'all' }, title: 'Transactions', showAccount: false, onEdit: () => {} });
     if (!isInv && d.categories.length) {
@@ -203,7 +206,7 @@
         F.chart($('#bal-chart', root), { type: 'line', aria: 'Balance over time',
           data: { labels: pts.map((p) => fmt.date(p.date)), datasets: [F.areaDs(isCard ? 'Owed' : 'Balance', pts.map((p) => shown(p.balance)), color, { tension: 0, stepped: !isInv ? 'before' : false })] },
           options: (() => { const o = F.chartOpts({ kind: 'line', beginAtZero: isCard }); o.scales.x.ticks.maxTicksLimit = 7; return o; })() });
-      } else { $('#bal-chart', root).classList.add('is-empty'); F.setHTML($('#bal-chart', root), F.empty('Not enough history yet', isInv ? 'Add past statement values as snapshots on the Investments page.' : 'Each sync adds a day.')); }
+      } else { $('#bal-chart', root).classList.add('is-empty'); F.setHTML($('#bal-chart', root), F.empty('Not enough history yet', isInv ? 'Add past statement balances on the Investments page.' : 'Each sync adds a day.')); }
       if (!isInv && d.monthly.length) {
         F.chart($('#io-chart', root), { type: 'bar', aria: 'Money in and out by month',
           data: { labels: d.monthly.map((m) => fmt.month(m.month, { short: true })), datasets: [F.barDs('In', d.monthly.map((m) => m.money_in), F.css('--accent')), F.barDs('Out', d.monthly.map((m) => m.money_out), F.css('--ink'))] },
@@ -213,7 +216,7 @@
     draw();
     ctl.rerender = () => { F.destroyCharts(); draw(); };
     $('[data-edit]', root).onclick = () => F.modal({
-      title: 'Edit account details', sub: 'Changes here are kept even when the bank sync and categorize script run again.',
+      title: 'Name, holder and type', sub: 'Your changes are kept when new transactions come in.',
       body: html`<div class="form-grid">
         <div class="field full"><label>Display name</label><input class="input" name="display_name" value="${a.display_name || ''}" placeholder="${a.name}"></div>
         <div class="field"><label>Holder</label><select class="input" name="holder">${F.meta.holders.map((h) => html`<option ${h === a.holder ? raw('selected') : ''}>${h}</option>`)}</select></div>
@@ -226,6 +229,72 @@
         await F.post('/api/account', { account_id: a.account_id, display_name: v.display_name, holder: v.holder, type: v.type, entity: v.entity,
           include_in_totals: v.include_in_totals === 'auto' ? null : v.include_in_totals === '1' });
         F.toast('Account updated'); F.loadMeta(true); F.refresh();
+      },
+    });
+  }
+
+  /* Account details: opened/closed, limit, APR, statement closing day, due day, minimum, autopay, annual fee, rewards, promo. */
+  function detailsSection(a, det, isCard, isLoan) {
+    const item = (label, x, value, extra = '') => html`<div class="ditem"><dt>${label}</dt><dd>${value}${extra}${x && x.s ? html`<small>${F.detailSource(x)}</small>` : ''}</dd></div>`;
+    const v = (x, f) => (x ? f(x.v) : '—');
+    const p = det.promo;
+    const items = [];
+    if (isCard && p) items.push(html`<div class="ditem wide"><dt>Promo APR</dt><dd>${F.promoChip(p) || F.promoText(p)}${p.balance > 0.005 ? html`<small>${fmt.money(p.balance, { cents: false })} ${p.balance_is_whole ? 'owed' : 'on the promo'}${p.ended ? '' : ` · about ${fmt.money(Math.ceil(p.monthly_needed), { cents: false })} a month clears it`}</small>` : html`<small>Nothing owed on it</small>`}</dd></div>`);
+    if (isCard) {
+      items.push(item('Credit limit', det.credit_limit, v(det.credit_limit, (x) => fmt.money(x, { cents: false })), a.balance && det.credit_limit && det.credit_limit.v ? html` <span class="muted small">· ${fmt.pct(Math.max(0, -a.balance) / det.credit_limit.v, 0)} used</span>` : ''));
+      items.push(item('Purchase APR', det.apr_purchase, v(det.apr_purchase, (x) => fmt.num(x, 2) + '%')));
+    }
+    if (isLoan) items.push(item('Interest rate', det.apr_purchase, v(det.apr_purchase, (x) => fmt.num(x, 3).replace(/0$/, '') + '%')));
+    if (isCard || isLoan) {
+      items.push(item('Statement closes', det.statement_close_day, v(det.statement_close_day, (x) => `the ${F.ordinal(x)}`)));
+      items.push(item('Payment due', det.due_day, det.due_day ? html`the ${F.ordinal(det.due_day.v)}${det.next_due ? html` <span class="muted small">· next ${fmt.date(det.next_due)}</span>` : ''}` : '—',
+        det.statement_due_day ? html`<small>Statement says the ${F.ordinal(det.statement_due_day.v)}</small>` : ''));
+      items.push(item(isLoan ? 'Monthly payment' : 'Minimum due', det.min_due, v(det.min_due, (x) => fmt.money(x))));
+      items.push(item('Autopay', det.autopay, det.autopay ? (det.autopay.v ? 'On' : 'Off') : '—'));
+    }
+    if (isCard) {
+      items.push(item('Annual fee', det.annual_fee, v(det.annual_fee, (x) => (x ? fmt.money(x, { cents: false }) : 'None'))));
+      items.push(item('Rewards', det.rewards, v(det.rewards, (x) => x)));
+    }
+    items.push(item(det.opened && det.opened.s === 'first-seen' ? 'First seen' : 'Opened', det.opened, v(det.opened, F.detailDate)));
+    if (det.closed || a.status === 'closed') items.push(item('Closed', det.closed, v(det.closed, F.detailDate)));
+    items.push(item('Holder', null, a.holder || '—'));
+    if (a.last4) items.push(item('Ending in', null, html`<span class="num">${a.last4}</span>`));
+    return html`<section class="acct-details" aria-labelledby="ad-h">${F.secHead('Account details', { id: 'ad-h', tools: html`<button type="button" class="btn sm" data-edit-details>${icon('edit')}Edit</button>` })}
+      <dl class="dgrid">${items}</dl></section>`;
+  }
+
+  function detailsModal(a, det, isCard, isLoan) {
+    const val = (x) => (x && x.v !== null && x.v !== undefined && x.s !== 'first-seen' && x.s !== 'last-seen' ? String(x.v) : '');
+    // Fields start with what's shown on the page; only fields that change are sent (and then marked as entered by hand).
+    const f = {
+      opened_date: val(det.opened), closed_date: val(det.closed), credit_limit: val(det.credit_limit), apr_purchase: val(det.apr_purchase),
+      statement_close_day: val(det.statement_close_day), due_day: val(det.due_day), min_due: val(det.min_due), annual_fee: val(det.annual_fee),
+      rewards: val(det.rewards),
+    };
+    const field = (name, label, attrs = '', hint = '', cls = '') => html`<div class="field ${cls}"><label for="ad-${name}">${label}</label><input class="input" id="ad-${name}" name="${name}" value="${f[name]}" ${attrs}>${hint ? html`<span class="hint">${hint}</span>` : ''}</div>`;
+    const money = (name, label) => html`<div class="field"><label for="ad-${name}">${label}</label><span class="money-wrap"><input class="input" id="ad-${name}" name="${name}" inputmode="decimal" enterkeyhint="next" value="${f[name]}"></span></div>`;
+    const day = (name, label, hint = '') => field(name, label, raw('type="number" inputmode="numeric" min="1" max="31" enterkeyhint="next"'), hint);
+    F.modal({
+      title: 'Account details', sub: a.label,
+      body: html`<div class="form-grid">
+        ${isCard ? money('credit_limit', 'Credit limit') : ''}
+        ${isCard || isLoan ? field('apr_purchase', isLoan ? 'Interest rate %' : 'Purchase APR %', raw('inputmode="decimal" enterkeyhint="next"')) : ''}
+        ${isCard || isLoan ? day('statement_close_day', 'Statement closes on day') : ''}
+        ${isCard || isLoan ? day('due_day', 'Payment due day', isCard ? 'Also the day Pay cards plans for' : '') : ''}
+        ${isCard || isLoan ? money('min_due', isLoan ? 'Monthly payment' : 'Minimum due') : ''}
+        ${isCard ? money('annual_fee', 'Annual fee') : ''}
+        ${isCard ? field('rewards', 'Rewards', raw('maxlength="120" placeholder="e.g. Hyatt points, 2% cash back"'), '', 'full') : ''}
+        ${field('opened_date', 'Opened', raw('inputmode="numeric" placeholder="YYYY-MM-DD"'), det.opened && det.opened.s === 'first-seen' ? `First seen ${F.detailDate(det.opened.v)}. A date, a month (2019-05) or a year` : 'A date, a month (2019-05) or a year')}
+        ${field('closed_date', 'Closed', raw('inputmode="numeric" placeholder="YYYY-MM-DD"'))}
+        ${isCard || isLoan ? html`<label class="check full"><input type="checkbox" name="autopay" ${det.autopay && det.autopay.v ? raw('checked') : ''}> On autopay</label>` : ''}</div>`,
+      onSubmit: async (v) => {
+        const body = { card_key: a.account_id };
+        for (const k of Object.keys(f)) if (k in v && String(v[k]).trim() !== f[k]) body[k] = String(v[k]).trim().replace(/[$,%]/g, '');
+        if ('autopay' in v && !!v.autopay !== !!(det.autopay && det.autopay.v)) body.autopay = v.autopay;
+        if (Object.keys(body).length === 1) return true;
+        await F.post('/api/card_settings', body);
+        F.toast('Details saved'); F.refresh();
       },
     });
   }

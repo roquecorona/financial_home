@@ -299,10 +299,15 @@
       }
     } else {
       out.push({ level: 'info', kind: 'orders', title: 'No Amazon or Target orders imported yet',
-        detail: 'Run scripts/ingest_orders.py to see item-level detail on those charges', link: '#/orders' });
+        detail: 'Import the Amazon and Target order history to see what each charge bought', link: '#/orders' });
     }
-    // v3: card promo (0% APR) periods ending within 45 days go first (H.promo_alerts lives in cards.js)
-    if (typeof H.promo_alerts === 'function') out.unshift(...H.promo_alerts());
+    // v3: card promo (0% APR) periods ending within 45 days go first, then everything else; a one-line summary of the
+    // promos running longer goes last (H.promo_alerts lives in cards.js)
+    if (typeof H.promo_alerts === 'function') {
+      const pa = H.promo_alerts();
+      out.unshift(...pa.filter((a) => a.kind === 'promo'));
+      out.push(...pa.filter((a) => a.kind !== 'promo'));
+    }
     return out;
   };
 
@@ -355,6 +360,11 @@
       a.first_txn = db.one('SELECT MIN(posted_date) FROM transactions WHERE account_id=?', [a.account_id]);
       a.note_count = db.one("SELECT COUNT(*) FROM notes WHERE target_type='account' AND target_id=?", [a.account_id]);
       a.spark = [];
+    }
+    // v3: details (opened, limit, APR, due day, promo…) for the list's chips; see H.account_details in cards.js
+    if (typeof H.account_details === 'function') {
+      const st = H.settings_by_account();
+      for (const a of accts) a.details = H.account_details(a, st.get(a.account_id) || {});
     }
     const ds = H.data_start();
     const days = [];
@@ -410,6 +420,7 @@
         WHERE account_id=? AND amount<0 AND is_transfer=0 GROUP BY 1 HAVING total>0 ORDER BY 2 DESC`, [aid]);
     const notes = db.Q("SELECT * FROM notes WHERE target_type='account' AND target_id=? ORDER BY pinned DESC, created_at DESC", [aid]);
     const counts = db.row('SELECT COUNT(*) AS n, MIN(posted_date) AS lo, MAX(posted_date) AS hi FROM transactions WHERE account_id=?', [aid]);
+    if (typeof H.account_details === 'function') a.details = H.account_details(a); // v3: opened, limit, APR, due day, promo…
     return { account: a, history: hist, monthly, categories: cats, notes, data_since: first_tx,
       txn_count: counts.n, first: counts.lo, last: counts.hi, reconstructed: a.group !== 'investments' };
   }

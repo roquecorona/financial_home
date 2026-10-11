@@ -113,20 +113,24 @@
       t12_unspecified: csum(t12, null, ['unspecified', 'snapshot']),
       all_employee: csum(null, null, ['employee']), all_employer: csum(null, null, ['employer']),
       all_unspecified: csum(null, null, ['unspecified', 'snapshot']),
+      // v3: money we deposited ourselves and 529 gifts (app.py had these under unspecified)
+      ytd_personal: csum(ytd0, null, ['personal']), t12_personal: csum(t12, null, ['personal']), all_personal: csum(null, null, ['personal']),
+      ytd_gift: csum(ytd0, null, ['gift']), t12_gift: csum(t12, null, ['gift']), all_gift: csum(null, null, ['gift']),
     };
+    const ours_t12 = (contrib.t12_employee || 0) + (contrib.t12_unspecified || 0) + (contrib.t12_personal || 0) + (contrib.t12_gift || 0);
     let first_flow = null;
     for (const f of allf) if (f[2] === 'contribution' && (first_flow === null || f[0] < first_flow)) first_flow = f[0];
     const cover_days = first_flow ? dnum(t) - dnum(first_flow > t12 ? first_flow : t12) : 0;
     const cover_months = cover_days ? Math.max(1.0, cover_days / 30.4375) : 0;
     contrib.t12_months_covered = round1(Math.min(12.0, cover_months));
-    contrib.avg_month_employee = cover_months ? r2(((contrib.t12_employee || 0) + (contrib.t12_unspecified || 0)) / cover_months) : 0;
+    contrib.avg_month_employee = cover_months ? r2(ours_t12 / cover_months) : 0;
     contrib.avg_month_employer = cover_months ? r2((contrib.t12_employer || 0) / cover_months) : 0;
     // v3: one-off lump sums (e.g. $130K of house-sale proceeds) would make the forecast assume that much every month.
     const LUMP = 10000;
     const lumps = allf.filter((f) => f[2] === 'contribution' && f[0] >= t12 && f[1] >= LUMP && f[3] !== 'employer');
     contrib.lumps_t12 = lumps.map((f) => ({ date: f[0], amount: r2(f[1]) }));
     contrib.avg_month_employee_regular = cover_months
-      ? r2(((contrib.t12_employee || 0) + (contrib.t12_unspecified || 0) - h().pysum(lumps.map((f) => f[1]))) / cover_months) : 0;
+      ? r2((ours_t12 - h().pysum(lumps.map((f) => f[1]))) / cover_months) : 0;
     const divs = { ytd: csum(ytd0, null, null, 'dividend'), period: csum(s_eff, e, null, 'dividend'), all: csum(null, null, null, 'dividend') };
     const fees = {
       ytd: r2(-(csum(ytd0, null, null, 'fee') || 0)), period: r2(-(csum(s_eff, e, null, 'fee') || 0)),
@@ -155,7 +159,7 @@
     for (const aid of Object.keys(flows)) {
       for (const f of flows[aid]) {
         if (s_eff <= f[0] && f[0] <= e) {
-          flow_rows.push({ date: f[0], account: acctname[aid] ?? null, account_id: aid, amount: r2(f[1]), kind: f[2], source: f[3] });
+          flow_rows.push({ date: f[0], account: acctname[aid] ?? null, account_id: aid, amount: r2(f[1]), kind: f[2], source: f[3], ...(f[4] === 'split' ? { split: true } : {}) });
         }
       }
     }
@@ -195,6 +199,22 @@
         missing_before: late && !from,
       };
     }
+    // v3: months whose value rests on an estimated balance (balances.source='estimate', e.g. a 403(b) back-cast from
+    // contributions): {aid: ['YYYY-MM', ...]}. The chart draws those stretches dashed and says "estimated".
+    const estimated = {};
+    for (const a of sel) {
+      const est = new Set(Q("SELECT as_of FROM balances WHERE account_id=? AND source='estimate'", [a.account_id]).map((x) => x.as_of));
+      if (!est.size) continue;
+      const real = new Set(Q("SELECT as_of FROM balances WHERE account_id=? AND COALESCE(source,'')!='estimate'", [a.account_id]).map((x) => x.as_of));
+      const v = ((eng.vals || {})[a.account_id] || []).map((x) => x[0]);
+      const ms = [];
+      for (const r of rows) {
+        let i = -1;
+        for (let k = 0; k < v.length && v[k] <= r.date; k++) i = k;
+        if (i >= 0 && est.has(v[i]) && !real.has(v[i])) ms.push(r.month);
+      }
+      if (ms.length) estimated[a.account_id] = ms;
+    }
     let kids_529 = null;
     const kidsAccts = allacc.filter(isKids);
     if (kidsAccts.length) {
@@ -211,7 +231,7 @@
       };
     }
     return {
-      kids_529, history,
+      kids_529, history, estimated,
       accounts: allacc, selected: sel.map((a) => a.account_id), start: s_eff, end: e, total_value: r2(total_value),
       stats, contributions: contrib, dividends: divs, fees, series,
       allocation: { by_class: by_class_sorted }, holdings,

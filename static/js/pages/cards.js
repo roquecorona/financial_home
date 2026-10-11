@@ -88,7 +88,7 @@ F.pages.cards = async (root, r, ctl) => {
   // ---------- promotional (0%) APR periods ----------
   const rateLbl = (p) => `${p.rate !== null && p.rate !== undefined ? +p.rate : 0}%`;
   const daysLbl = (p) => (p.ended ? 'ended' : p.days_left === 0 ? 'ends today' : `${p.days_left} day${p.days_left === 1 ? '' : 's'} left`);
-  const promoPill = (c) => (c.promo && c.promo.balance > 0.005 ? html`<button type="button" class="pill ${c.promo.ended ? 'crit' : c.promo.soon ? 'warn' : 'neutral'}" data-promo title="${rateLbl(c.promo)} APR until ${fmt.date(c.promo.end, { long: true })}">${rateLbl(c.promo)} to ${fmt.date(c.promo.end, { year: true })} · ${c.promo.ended ? 'ended' : `${c.promo.days_left}d`}</button>` : '');
+  const promoPill = (c) => (c.promo && c.promo.balance > 0.005 ? html`<button type="button" class="pill ${c.promo.ended ? 'crit' : c.promo.soon ? 'warn' : 'neutral'}" data-promo title="${rateLbl(c.promo)} APR until ${fmt.date(c.promo.end, { long: true })}">${F.promoText(c.promo)}</button>` : '');
   const drawPromos = () => {
     const list = cards.filter((c) => c.promo && ownerOk(c) && (showHidden || !c.hidden)).sort((a, b) => a.promo.end.localeCompare(b.promo.end));
     const box = $('#promo-box', root); if (!box) return;
@@ -134,6 +134,18 @@ F.pages.cards = async (root, r, ctl) => {
     },
   });
 
+  // v3: the card's details in one quiet line (limit, APR, statement closing day, opened); all of them on the account page
+  const dline = (c) => {
+    const d = c.details || {};
+    const bits = [];
+    if (d.credit_limit) bits.push(`Limit ${fmt.money(d.credit_limit.v, { compact: true, cents: false })}`);
+    if (d.apr_purchase && !(c.promo && c.promo.balance > 0.005)) bits.push(`APR ${fmt.num(d.apr_purchase.v, 2)}%`);
+    if (d.statement_close_day) bits.push(`Closes ${F.ordinal(d.statement_close_day.v)}`);
+    if (d.statement_due_day) bits.push(`Statement due ${F.ordinal(d.statement_due_day.v)}`);
+    if (d.annual_fee && d.annual_fee.v) bits.push(`Fee ${fmt.money(d.annual_fee.v, { cents: false })}`);
+    if (d.opened) bits.push(`${d.opened.s === 'first-seen' ? 'Since' : 'Opened'} ${F.detailDate(d.opened.v)}`);
+    return bits.length ? html`<div class="card-dline">${bits.join(' · ')}</div>` : '';
+  };
   const row = (c) => {
     const util = c.credit_limit && c.owed > 0 ? Math.min(1, c.owed / c.credit_limit) : null;
     const od = overdue(c);
@@ -143,6 +155,7 @@ F.pages.cards = async (root, r, ctl) => {
       <div class="name"><b>${c.linked ? html`<a href="#/accounts/${encodeURIComponent(c.account_id)}">${c.name}</a>` : c.name}</b>
         <div class="meta"><span>${short(c.holder) || ''}${c.last4 ? ' ••' + c.last4 : ''}</span>${od ? html`<span class="pill crit">Past due</span>` : ''}${!c.linked ? html`<span class="pill neutral" title="Not connected to the bank sync">Sheet</span>` : ''}${c.autopay ? html`<span class="pill info">Autopay</span>` : ''}
           ${c.auto_paid && !c.paid ? html`<span class="pill good" title="Payments this month cover the plan">${icon('check')}Payment seen</span>` : ''}${promoPill(c)}<span class="saved-flag" data-saved="${c.card_key}" aria-live="polite"></span></div>
+        ${dline(c)}
         ${util !== null ? html`<div class="util ${util > 0.3 ? 'hi' : ''}" title="${fmt.pct(util, 0)} of ${fmt.money(c.credit_limit, { cents: false })} limit"><i style="width:${(util * 100).toFixed(1)}%"></i></div>` : ''}</div>
       <div class="owed"><span class="cell-label">Owed</span><span class="num">${fmt.amt(c.owed)}</span><small>${c.linked ? (c.owed_asof ? fmt.ago(c.owed_asof) : '') : (c.owed_asof || '').replace('sheet ', 'sheet · ')}${c.paid_this_month ? ` · paid ${fmt.amt(c.paid_this_month, { cents: false })}` : ''}</small></div>
       <div class="c-stmt"><label class="cell-label" for="st-${c.card_key}">Statement</label><span class="money-wrap"><input class="input sm" id="st-${c.card_key}" data-f="statement_due" inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${c.statement_due ?? ''}" aria-label="Statement balance, ${c.name}"></span></div>
@@ -157,6 +170,7 @@ F.pages.cards = async (root, r, ctl) => {
         <div class="c-due"><label class="cell-label" for="dd-${c.card_key}">Due date this month</label><input class="input sm" type="date" id="dd-${c.card_key}" data-f="due_date" value="${c.due_date || ''}"></div>
         <div class="c-set"><span class="cell-label">Card defaults</span><button type="button" class="btn sm" data-gear>${icon('settings')}Due day, limit, autopay…</button></div>
         <div class="c-set"><span class="cell-label">Promo APR</span><button type="button" class="btn sm" data-promo>${c.promo ? `${rateLbl(c.promo)} until ${fmt.date(c.promo.end, { year: true })}…` : 'Add a 0% period…'}</button></div>
+        ${c.linked ? html`<div class="c-set"><span class="cell-label">Account details</span><a class="btn sm" href="#/accounts/${encodeURIComponent(c.account_id)}">Limit, APR, opened…</a></div>` : ''}
         ${c.payments.length ? html`<div class="c-pays"><span class="cell-label">Payments seen this month</span>${c.payments.map((p) => html`<button type="button" class="linkbtn" data-txn="${p.txn_id}">${fmt.date(p.posted_date)} · ${fmt.amt(p.amount)}</button>`)}</div>` : ''}
       </div>
     </div>`;
@@ -250,8 +264,11 @@ F.pages.cards = async (root, r, ctl) => {
       <label class="check"><input type="checkbox" name="hidden" ${c.hidden ? raw('checked') : ''}> Hide from this screen</label></div>`,
     onSubmit: async (v) => {
       if (v.credit_limit && Number.isNaN(F.parseAmt(v.credit_limit))) { F.toast('Credit limit must be a number', { kind: 'error' }); return false; }
-      await F.post('/api/card_settings', { card_key: c.card_key, display_name: v.display_name, due_day: v.due_day, credit_limit: v.credit_limit,
-        pay_from: v.pay_from === '__other' ? '' : v.pay_from, autopay: v.autopay, hidden: v.hidden });
+      // due day and limit go only when changed, so a value shown from the sheet isn't saved as one entered by hand
+      const body = { card_key: c.card_key, display_name: v.display_name, pay_from: v.pay_from === '__other' ? '' : v.pay_from, autopay: v.autopay, hidden: v.hidden };
+      if (String(v.due_day).trim() !== String(c.due_day ?? '')) body.due_day = v.due_day;
+      if (String(v.credit_limit).replace(/[$,\s]/g, '') !== String(c.credit_limit ?? '')) body.credit_limit = v.credit_limit;
+      await F.post('/api/card_settings', body);
       if (!c.linked && v.owed_override !== undefined) await F.post('/api/plan', { month, card_key: c.card_key, owed_override: v.owed_override });
       F.toast('Card settings saved'); F.refresh();
     },

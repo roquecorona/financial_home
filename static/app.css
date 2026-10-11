@@ -1065,3 +1065,29 @@ button.pill { background: none; cursor: pointer; font-family: inherit; }
   .oi-tags { flex-direction: column; }
 }
 #split-left svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; vertical-align: -2px; margin-right: 4px; }
+
+/* ---------- account details (v3 10.11): chips in lists, a ruled definition grid on the account page ---------- */
+.dchips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 4px; min-width: 0; }
+.dchip { font-size: 12px; color: var(--ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.page-head .lede .promo-chip { margin-left: 4px; vertical-align: 1px; }
+.acct-details { margin-top: 24px; }
+.dgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); margin: 0; border-top: 1px solid var(--line-2); }
+.ditem { padding: 10px 14px 10px 0; border-bottom: 1px solid var(--line-2); min-width: 0; }
+.ditem.wide { grid-column: span 2; }
+.ditem dt { font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--ink-2); }
+.ditem dd { margin: 3px 0 0; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ditem dd small { display: block; font-weight: 400; font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+.card-dline { font-size: 12px; color: var(--ink-2); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 760px) {
+  .dgrid { grid-template-columns: 1fr 1fr; }
+  .ditem.wide { grid-column: 1 / -1; }
+  .ditem { padding-right: 8px; }
+}
+/* one quiet line that opens to the details (Investments: partial history, estimates) */
+.quiet-note { margin-top: 10px; font-size: 13px; color: var(--ink-2); }
+.quiet-note > summary { cursor: pointer; list-style: none; padding: 6px 0; min-height: 32px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.quiet-note > summary::-webkit-details-marker { display: none; }
+.quiet-note > summary .linkish { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+.quiet-note[open] > summary .linkish { text-decoration: none; }
+.quiet-note .quiet-body { padding: 4px 0 4px 12px; border-left: 1px solid var(--line); }
+.quiet-note .quiet-body p { margin: 0 0 6px; }

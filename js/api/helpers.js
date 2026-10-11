@@ -766,41 +766,80 @@
   // ------------------------------------------------------------------------------------------------------------------
   // v3 (documented divergence from app.py): money moved between investment accounts (rollovers, ACAT/in-kind transfers,
   // transfer-out distributions) is kind 'transfer': an external flow for the account's value and returns, but never a
-  // contribution or withdrawal, so a rollover isn't counted as saving. Bank deposits labelled "TRANSFER IN - funds received"
-  // are contributions (they were unclassified, so an $80K deposit read as market gain).
+  // contribution or withdrawal, so a rollover isn't counted as saving.
+  // Every contribution gets a source (v3, 10.11.2026):
+  //   employee  payroll deferral into a workplace plan (401(k)/403(b)/FRS/HSA: PARTIC CONTR, employee, deferral, payroll)
+  //   employer  match / non-elective / safe-harbor money (CO CONTR, employer, company, match)
+  //   personal  money we moved in ourselves (bank deposits into brokerage/IRA/Roth/HSA/529: "deposit from bank",
+  //             "funds received", or any other contribution to an account that isn't a workplace plan)
+  //   gift      529 gifting deposits
+  //   payroll   (internal) a workplace-plan credit that doesn't say who paid (e.g. the sync's plain "contribution" rows):
+  //             inv_flows splits it into employee + employer using that account's own labelled contributions
+  //   unspecified / snapshot  only when nothing tells us (a workplace plan with no labelled history)
+  // app.py counted plain "contribution" rows as employee and bank deposits / 403(b) credits as unspecified.
   H.INV_TRANSFER_RE = /\brollover (in|distr|out)\b|\bacat\b|\bjournal(ed)?\b|transfer of assets|transfer out distr|\btransfer in\b(?!.*(funds received|deposit))/i;
-  H.INV_DEPOSIT_RE = /funds received|deposit from bank/i;
+  H.INV_DEPOSIT_RE = /funds received|deposit from bank|deposits per statement/i;
+  H.INV_WORKPLACE = ['401k', '403b'];
   H.classify_inv = (sub, desc, amt, atype) => {
     const d = (desc || '').toLowerCase();
-    if (H.INV_DEPOSIT_RE.test(d) && amt > 0) return ['contribution', 'unspecified'];
+    const workplace = H.INV_WORKPLACE.includes(atype);
+    if (amt > 0 && /\bgift(ing)?\b/.test(d) && sub !== 'Dividend' && sub !== 'Fees') return ['contribution', 'gift'];
+    if (H.INV_DEPOSIT_RE.test(d) && amt > 0) return ['contribution', workplace ? 'payroll' : 'personal'];
     if (sub !== 'Dividend' && sub !== 'Fees' && H.INV_TRANSFER_RE.test(d) && amt) return ['transfer', amt > 0 ? 'in' : 'out'];
     if (sub === 'Contribution') {
-      if (d.includes('co contr') || d.includes('employer') || d.includes('company')) return ['contribution', 'employer'];
-      if (d.includes('partic') || d.includes('contribution') || d.includes('employee') || d.includes('deferral')) {
-        return ['contribution', 'employee'];
+      if (d.includes('co contr') || d.includes('employer') || d.includes('company') || /\bmatch\b|non.?elective|safe harbor/.test(d)) {
+        return ['contribution', 'employer'];
       }
-      return ['contribution', 'unspecified'];
+      if (d.includes('partic') || d.includes('employee') || d.includes('deferral') || d.includes('payroll')) return ['contribution', 'employee'];
+      return ['contribution', workplace ? 'payroll' : (atype === 'hsa' ? 'employee' : 'personal')];
     }
     if (sub === 'Distribution') return ['withdrawal', null];
-    if (sub === 'Other' && amt > 0 && (atype === '401k' || atype === '403b')) {
-      return amt >= 50 ? ['contribution', 'unspecified'] : ['dividend', null];
+    if (sub === 'Other' && amt > 0 && workplace) {
+      return amt >= 50 ? ['contribution', 'payroll'] : ['dividend', null];
     }
     if (sub === 'Dividend' && amt > 0 && !d.includes('reinvest')) return ['dividend', null];
     if (sub === 'Fees') return ['fee', null];
     return [null, null];
   };
+  // Display names for contribution sources (the Investments table and flow list).
+  H.INV_SOURCE_LABEL = { employee: 'Employee (payroll)', employer: 'Employer (match)', personal: 'Personal deposits', gift: 'Gifts', unspecified: 'Not specified', snapshot: 'Not specified' };
 
-  // {aid: [[date, amount, kind, source]]}
+  // Split workplace-plan credits that don't say who paid ('payroll', and snapshot-derived amounts in a workplace plan) into
+  // employee + employer parts, using the share of employer money among that account's labelled contributions in the year
+  // before (or, failing that, any time). With no labelled history the amount stays 'unspecified'. flows: [[d, amt, kind, src]]
+  function split_payroll(flows, workplace) {
+    const lab = flows.filter((f) => f[2] === 'contribution' && (f[3] === 'employee' || f[3] === 'employer'));
+    const share = (d) => {
+      const lo = H.add_days(d, -400);
+      let w = lab.filter((f) => f[0] <= d && f[0] >= lo);
+      if (!w.length) w = lab;
+      const emp = pysum(w.filter((f) => f[3] === 'employer').map((f) => f[1])), tot = pysum(w.map((f) => f[1]));
+      return tot > 0 ? emp / tot : null;
+    };
+    const out = [];
+    for (const f of flows) {
+      if (f[2] !== 'contribution' || !(f[3] === 'payroll' || (workplace && f[3] === 'snapshot'))) { out.push(f); continue; }
+      const sh = share(f[0]);
+      if (sh === null) { out.push([f[0], f[1], f[2], f[3] === 'payroll' ? 'unspecified' : f[3]]); continue; }
+      out.push([f[0], f[1] * (1 - sh), 'contribution', 'employee', 'split']);
+      if (sh > 0) out.push([f[0], f[1] * sh, 'contribution', 'employer', 'split']);
+    }
+    return out;
+  }
+
+  // {aid: [[date, amount, kind, source(, 'split')]]}
   H.inv_flows = (acct_ids) => {
     if (!acct_ids || !acct_ids.length) return {};
     const ph = acct_ids.map(() => '?').join(',');
     const out = {};
+    const atype = {};
     for (const a of acct_ids) out[a] = [];
     const first_tx = {};
     for (const r of H.Q(`SELECT t.account_id, t.posted_date, t.amount, t.description, t.subcategory, a.type
             FROM transactions t JOIN accounts a USING(account_id) WHERE t.account_id IN (${ph}) AND t.posted_date IS NOT NULL
             ORDER BY t.posted_date`, acct_ids)) {
       if (!(r.account_id in first_tx)) first_tx[r.account_id] = r.posted_date;
+      atype[r.account_id] = r.type;
       const [kind, src] = H.classify_inv(r.subcategory, r.description, r.amount, r.type);
       if (kind) out[r.account_id].push([r.posted_date, r.amount, kind, src]);
     }
@@ -817,6 +856,11 @@
         prev = s;
       }
       out[aid].sort(pycmp);
+      const t = atype[aid] || H.one('SELECT type FROM accounts WHERE account_id=?', [aid]);
+      const workplace = H.INV_WORKPLACE.includes(t);
+      out[aid] = split_payroll(out[aid], workplace);
+      // a snapshot amount outside a workplace plan is money we put in ourselves
+      if (!workplace) out[aid] = out[aid].map((f) => (f[2] === 'contribution' && f[3] === 'snapshot' ? [f[0], f[1], f[2], 'personal'] : f));
     }
     return out;
   };

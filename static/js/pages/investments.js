@@ -13,6 +13,7 @@ F.pages.investments = async (root, r, ctl) => {
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
   const kids = lsGet('fin.kids529', '0') === '1';
   let fullOnly = lsGet('fin.inv.fullHistory', '0') === '1';
+  let noteOpen = false;
   const d = await F.get('/api/investments', { types: p.types, accounts: p.accounts, start, end, kids529: kids ? '1' : '' });
   if (!ctl.alive()) return;
   const k529 = d.kids_529;
@@ -40,6 +41,15 @@ F.pages.investments = async (root, r, ctl) => {
   const lateMissing = ser0.length ? d.accounts.filter((a) => selAccts.has(a.account_id) && hist[a.account_id] && hist[a.account_id].missing_before
     && hist[a.account_id].first_date.slice(0, 7) > ser0[0].month) : [];
   const pctOrDash = (v) => (v === null || v === undefined ? '—' : fmt.pct(v, 1, true));
+  // [key, label, always shown, tooltip]: payroll deferrals, employer match/non-elective, our own deposits, 529 gifts, and
+  // (only when something truly doesn't say) not specified
+  const CONTRIB_ROWS = [['employee', 'Employee (payroll)', true, 'Paycheck deferrals into the 401(k), 403(b), FRS and HSA'],
+    ['employer', 'Employer (match)', true, 'Match, non-elective and safe-harbor money'],
+    ['personal', 'Personal deposits', true, 'Money we moved in ourselves: brokerage, IRA, Roth, HSA and 529 deposits'],
+    ['gift', 'Gifts', false, '529 gifting deposits'], ['unspecified', 'Not specified', false, 'Plan credits that don’t say who paid']];
+  const SRC_TITLE = { employee: 'Employee contribution', employer: 'Employer contribution', personal: 'Personal deposit', gift: 'Gift', unspecified: 'Contribution', snapshot: 'Contribution' };
+  const estimated = d.estimated || {};
+  const nEstimated = Object.keys(estimated).filter((aid) => selAccts.has(aid)).length;
 
   // ---------- forecast defaults ----------
   const fcDefaults = {
@@ -70,19 +80,17 @@ F.pages.investments = async (root, r, ctl) => {
       ${F.kpi('Market gain', st.market_gain !== null && st.market_gain !== undefined ? F.kpiMoney(st.market_gain) : '—', 'Value change minus contributions')}
       ${F.kpi('Time-weighted', pctOrDash(st.twr), st.twr_annualized !== null && st.twr_annualized !== undefined ? `${fmt.pct(st.twr_annualized, 1)} a year` : st.twr !== null && st.twr !== undefined ? 'Cumulative, under a year' : 'Needs 2+ valuations')}
       ${F.kpi('XIRR', pctOrDash(st.xirr), 'Money-weighted, a year')}
-      ${F.kpi('Dividends · fees', html`${fmt.amt(d.dividends.period, { cents: false })}<span class="of"> · ${fmt.amt(d.fees.period)}</span>`, 'Where the sync reports them', { vcls: 'sm' })}
+      ${F.kpi('Dividends · fees', html`${fmt.amt(d.dividends.period, { cents: false })}<span class="of"> · ${fmt.amt(d.fees.period)}</span>`, 'Where the institution reports them', { vcls: 'sm' })}
     </section>
     ${hasHistory && !st.enough_history ? html`<div class="callout warn" style="margin-top:16px">${icon('info')}<div>Returns need at least two valuations in this period. Pick a longer period or add past statement balances with <b>Add a past balance</b>.</div></div>` : ''}
-    ${(d.snapshots || []).some((s) => (s.note || '').includes('TEST DATA')) ? html`<div class="callout warn" style="margin-top:12px">${icon('alert')}<div>Some snapshots are marked TEST DATA. Delete them in the Past balances table once real statements are entered.</div></div>` : ''}
+    ${(d.snapshots || []).some((s) => (s.note || '').includes('TEST DATA')) ? html`<div class="callout warn" style="margin-top:12px">${icon('alert')}<div>Some past balances are marked TEST DATA. Delete them under Past balances once real statements are entered.</div></div>` : ''}
     <div class="grid">
       ${hasHistory ? html`<section class="panel span-8"><div class="panel-head"><h2>Value over time</h2><span class="sub">${periodLabel || 'Month-end values'} · stacked by account</span>
           ${lateMissing.length ? html`<div class="tools"><div class="seg sm" role="group" aria-label="Accounts in the chart"><button type="button" data-full="0" aria-pressed="${String(!fullOnly)}">All accounts</button><button type="button" data-full="1" aria-pressed="${String(fullOnly)}">Full history only</button></div></div>` : ''}</div>
         <div class="panel-body"><div class="chart h-300" id="val-chart"></div><div id="val-legend"></div><div id="val-note"></div></div></section>` : html`<section class="span-8">${F.secHead('Value over time')}${F.empty('Charts appear once there are two valuations', html`Value over time, growth versus contributions and market gain by month need at least two dated balances per account. The bank sync adds one a day from now on; to see further back, add each account’s balance from an old statement (for example every December 31).`, html`<button type="button" class="btn primary" data-add-snap>${icon('plus')}Add a past balance</button>`)}</section>`}
-      <section class="panel span-4"><div class="panel-head"><h2>Contributions</h2><span class="sub">Employee vs employer where the description says</span></div>
-        <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Who</th><th class="num">Year to date</th><th class="num">12 months</th><th class="num">All time</th></tr></thead><tbody>
-          <tr><td>Employee</td><td class="num" data-label="YTD">${fmt.amt(c.ytd_employee, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12_employee, { cents: false })}</td><td class="num key">${fmt.amt(c.all_employee, { cents: false })}</td></tr>
-          <tr><td>Employer</td><td class="num" data-label="YTD">${fmt.amt(c.ytd_employer, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12_employer, { cents: false })}</td><td class="num key">${fmt.amt(c.all_employer, { cents: false })}</td></tr>
-          <tr><td title="The 403(b) and snapshot-derived contributions don't say who paid">Not specified</td><td class="num" data-label="YTD">${fmt.amt(c.ytd_unspecified, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12_unspecified, { cents: false })}</td><td class="num key">${fmt.amt(c.all_unspecified, { cents: false })}</td></tr></tbody>
+      <section class="panel span-4"><div class="panel-head"><h2>Contributions</h2><span class="sub">Who put the money in</span></div>
+        <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>From</th><th class="num">Year to date</th><th class="num">12 months</th><th class="num">All time</th></tr></thead><tbody>
+          ${CONTRIB_ROWS.filter(([k, , always]) => always || c[`all_${k}`] || c[`t12_${k}`] || c[`ytd_${k}`]).map(([k, label, , tip]) => html`<tr><td ${tip ? raw(`title="${F.esc(tip)}"`) : ''}>${label}</td><td class="num" data-label="YTD">${fmt.amt(c[`ytd_${k}`] || 0, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c[`t12_${k}`] || 0, { cents: false })}</td><td class="num key">${fmt.amt(c[`all_${k}`] || 0, { cents: false })}</td></tr>`)}</tbody>
           <tfoot><tr><td>Total</td><td class="num" data-label="YTD">${fmt.amt(c.ytd, { cents: false })}</td><td class="num" data-label="12 mo">${fmt.amt(c.t12, { cents: false })}</td><td class="num key">${fmt.amt(c.all, { cents: false })}</td></tr></tfoot></table></div>
           <div class="panel-body" style="padding-top:6px"><p class="small ink2">Averaging <b>${fmt.money((c.avg_month_employee || 0) + (c.avg_month_employer || 0), { cents: false })}</b> a month over the last ${fmt.num(c.t12_months_covered, 1)} months on record${(c.lumps_t12 || []).length ? html`, or <b>${fmt.money((c.avg_month_employee_regular || 0) + (c.avg_month_employer || 0), { cents: false })}</b> without one-off deposits of $10K or more (${c.lumps_t12.map((l) => `${fmt.money(l.amount, { cents: false })} on ${fmt.date(l.date, { year: true })}`).join(', ')}) — the forecast uses that` : ''}. The 12-month figure covers only months with data.</p></div></div></section>
       ${k529 ? kidsPanel() : ''}
@@ -106,7 +114,7 @@ F.pages.investments = async (root, r, ctl) => {
           ${(d.snapshots || []).length ? '' : F.empty('No past balances yet', 'Add a value from an old statement — for example each December 31 — to extend the history.')}</div></div></section>
       <section class="panel span-5"><div class="panel-head"><h2>Contributions and withdrawals</h2><span class="sub">In this period · rollovers and transfers between accounts are not contributions</span></div>
         <div class="panel-body flush"><div class="list" style="max-height:420px;overflow-y:auto">${d.flows.filter((f) => (f.kind === 'contribution' || f.kind === 'withdrawal' || f.kind === 'transfer') && Math.abs(f.amount) >= 1).slice(0, 120).map((f) => html`<div class="list-item">
-          <div class="main-col"><div class="title">${f.kind === 'transfer' ? (f.amount > 0 ? 'Moved in (rollover or transfer)' : 'Moved out (rollover or transfer)') : f.kind === 'withdrawal' ? 'Withdrawal' : f.source === 'employer' ? 'Employer contribution' : f.source === 'employee' ? 'Our contribution' : f.source === 'snapshot' ? 'Contributions (from snapshots)' : 'Contribution'}</div><div class="meta">${fmt.date(f.date, { year: true })} · ${f.account}</div></div>
+          <div class="main-col"><div class="title">${f.kind === 'transfer' ? (f.amount > 0 ? 'Moved in (rollover or transfer)' : 'Moved out (rollover or transfer)') : f.kind === 'withdrawal' ? 'Withdrawal' : SRC_TITLE[f.source] || 'Contribution'}</div><div class="meta">${fmt.date(f.date, { year: true })} · ${f.account}${f.split ? html` · <span title="The plan didn’t say who paid; split like this account’s other paychecks">estimated split</span>` : ''}</div></div>
           <span class="amount ${f.kind === 'transfer' ? 'muted' : ''}">${F.amtCell(f.amount)}</span></div>`)}</div>
           ${d.flows.some((f) => f.kind === 'contribution' || f.kind === 'withdrawal' || f.kind === 'transfer') ? '' : F.empty('Nothing in this period')}</div></section>
       <section class="panel span-12"><details class="disclosure method"><summary>How these numbers are calculated</summary><div class="panel-body" style="padding-top:0">${methodology()}</div></details></section>
@@ -279,13 +287,14 @@ F.pages.investments = async (root, r, ctl) => {
       o.plugins.tooltip.filter = (it) => it.dataIndex >= startIdx(accts[it.datasetIndex].account_id);
       o.plugins.tooltip.callbacks.label = (it) => {
         const a = accts[it.datasetIndex], h = hist[a.account_id];
-        const tag = h && lateIds.has(a.account_id) && ser[it.dataIndex].month === h.first_date.slice(0, 7) ? ` (history starts ${mmyyyy(h.first_date)})` : '';
+        const tag = (estimated[a.account_id] || []).includes(ser[it.dataIndex].month) ? ' (estimated)'
+          : h && lateIds.has(a.account_id) && ser[it.dataIndex].month === h.first_date.slice(0, 7) ? ` (history starts ${mmyyyy(h.first_date)})` : '';
         return `${a.label}: ${fmt.money(it.parsed.y, { cents: false })}${tag}`;
       };
       o.plugins.tooltip.callbacks.footer = (items) => `Total ${fmt.money(items.reduce((s, i) => s + (i.parsed.y || 0), 0), { cents: false })}`;
       const starts = {
         id: 'histStarts', afterDatasetsDraw(ch) {
-          if (fullOnly) return;
+          if (fullOnly || !noteOpen) return; // markers only while the partial-history details are open
           const cx = ch.ctx; cx.save();
           const narrow = ch.chartArea.right - ch.chartArea.left < 520;
           lateMissing.forEach((a, k) => {
@@ -299,13 +308,25 @@ F.pages.investments = async (root, r, ctl) => {
           cx.restore();
         },
       };
+      // estimated months (a back-cast balance): dashed line and a lighter fill for that stretch
+      const isEst = (a, i) => { const e = estimated[a.account_id]; return !!(e && ser[i] && e.includes(ser[i].month)); };
       F.chart($('#val-chart', root), { type: 'line', aria: 'Value over time by account', data: { labels, datasets: accts.map((a, i) => ({
-        ...F.lineDs(a.label, ser.map((m) => m.by_account[a.account_id] ?? 0), color(a.account_id)), fill: i === 0 ? 'origin' : '-1', backgroundColor: F.alpha(color(a.account_id), 0.55), borderWidth: 1.5, tension: 0.15 })) }, options: o, plugins: [starts] });
-      F.setHTML($('#val-legend', root), F.legend(accts.map((a) => ({ label: lateIds.has(a.account_id) ? `${a.label} · history starts ${mmyyyy(hist[a.account_id].first_date)}` : a.label, color: color(a.account_id) }))));
-      F.setHTML($('#val-note', root), lateMissing.length ? html`<div class="callout ${fullOnly ? '' : 'warn'}" style="margin-top:12px">${icon('info')}<div>${fullOnly
-        ? html`Showing only accounts with history across the whole chart. Left out: ${lateMissing.map((a) => `${a.label} (${fmt.money(a.balance, { cents: false })} now, history starts ${mmyyyy(hist[a.account_id].first_date)})`).join('; ')}.`
-        : lateMissing.map((a) => { const h = hist[a.account_id]; return html`<p style="margin:0 0 6px"><b>${a.label}</b>: history starts ${mmyyyy(h.first_date)}, so the chart steps up by ${fmt.money(h.first_value, { cents: false })} there — that is money we already had, not growth (returns count it as money coming in).${a.meta_notes ? html` ${a.meta_notes}` : ' Its earlier history isn’t in the data.'}</p>`; })}
-        ${fullOnly ? '' : html`<div class="row wrap" style="gap:6px;margin-top:4px">${lateMissing.map((a) => html`<button type="button" class="btn sm" data-add-snap="${a.account_id}">${icon('plus')}Add a past balance · ${a.label.replace(/^(Voya|Fidelity|Vanguard) /, '')}</button>`)}</div>`}</div></div>` : '');
+        ...F.lineDs(a.label, ser.map((m) => m.by_account[a.account_id] ?? 0), color(a.account_id)), fill: i === 0 ? 'origin' : '-1', backgroundColor: F.alpha(color(a.account_id), 0.55), borderWidth: 1.5, tension: 0.15,
+        ...(estimated[a.account_id] ? { segment: { borderDash: (ctx) => (isEst(a, ctx.p1DataIndex) ? [4, 3] : undefined),
+          backgroundColor: (ctx) => (isEst(a, ctx.p1DataIndex) ? F.alpha(color(a.account_id), 0.2) : undefined) } } : {}) })) }, options: o, plugins: [starts] });
+      F.setHTML($('#val-legend', root), F.legend(accts.map((a) => ({ label: `${a.label}${estimated[a.account_id] ? ' · partly estimated' : ''}`, color: color(a.account_id) }))));
+      // Partial history and estimates: one quiet line; the per-account explanation and "Add a past balance" sit behind it.
+      const estAccts = accts.filter((a) => (estimated[a.account_id] || []).length);
+      const nPartial = lateMissing.length;
+      const quietBits = [nPartial ? `${nPartial} account${nPartial === 1 ? ' has' : 's have'} partial history` : '', estAccts.length ? `${estAccts.length === 1 ? 'some values are' : 'some values are'} estimated` : '',
+        fullOnly && nPartial ? 'showing full-history accounts only' : ''].filter(Boolean);
+      F.setHTML($('#val-note', root), quietBits.length ? html`<details class="quiet-note" ${noteOpen ? raw('open') : ''}><summary>${quietBits.join(' · ')} · <span class="linkish">Details</span></summary>
+        <div class="quiet-body">
+          ${estAccts.map((a) => html`<p><b>${a.label}</b>: values from ${mmyyyy(estimated[a.account_id][0] + '-01')} to ${mmyyyy(estimated[a.account_id][estimated[a.account_id].length - 1] + '-01')} are estimates, drawn dashed.</p>`)}
+          ${lateMissing.map((a) => { const h = hist[a.account_id]; const note = F.plainNote(a.meta_notes); return html`<p><b>${a.label}</b>: history starts ${mmyyyy(h.first_date)}${fullOnly ? `, ${fmt.money(a.balance, { cents: false })} now — left out of the chart` : html`, so the chart steps up by ${fmt.money(h.first_value, { cents: false })} there — money we already had, not growth`}.${note ? html` ${note}` : ''}</p>`; })}
+          ${nPartial && !fullOnly ? html`<div class="row wrap" style="gap:6px">${lateMissing.map((a) => html`<button type="button" class="btn sm" data-add-snap="${a.account_id}">${icon('plus')}Add a past balance · ${a.label.replace(/^(Voya|Fidelity|Vanguard) /, '')}</button>`)}</div>` : ''}
+        </div></details>` : '');
+      { const det = $('#val-note details', root); if (det) det.ontoggle = () => { noteOpen = det.open; const cv = $('#val-chart canvas', root); const ch = cv && window.Chart && window.Chart.getChart(cv); if (ch) ch.draw(); }; }
       $$('#val-note [data-add-snap]', root).forEach((b) => (b.onclick = () => snapModal({ account_id: b.dataset.addSnap })));
       let cum = ser[0].start || 0;
       const base = ser.map((m) => (cum += m.net_flow || 0));
@@ -354,8 +375,10 @@ F.pages.investments = async (root, r, ctl) => {
       <p>The fan shows the 10th, 50th and 90th percentile of ${fmt.num(fc.paths)} paths at each year end. “Today’s dollars” divides by (1 + inflation)<sup><var>k</var>/12</sup>. The chance of reaching the target is the share of paths at or above it in December of the target year.</p>
       <h3>Required monthly contribution</h3>
       <p>On a fixed set of simulated markets, each path’s final value is a straight line in our monthly contribution <var>c</var>: <var>V</var><sub>T</sub> = <var>A</var><sub>i</sub> + <var>c</var>·<var>B</var><sub>i</sub>. So each path needs <var>c</var><sub>i</sub> = (target − <var>A</var><sub>i</sub>) / <var>B</var><sub>i</sub>, and the amount that succeeds with probability <var>q</var> is the <var>q</var>-quantile of those — the median for 50%, the 80th percentile for 80% confidence.</p>
-      <h3>Contributions: employee or employer</h3>
-      <p>Descriptions with “CO CONTR” or “employer” count as employer money; “PARTIC CONTR”, “contribution” or “employee” as ours. Voya 403(b) credits don’t say who paid, so they show as not specified; credits under $50 there are treated as dividends. Past balances with a contributions-year-to-date figure add contributions for periods before transactions were synced.</p>
+      <h3>Who put the money in</h3>
+      <p><b>Employee</b> is paycheck deferrals into the 401(k), 403(b), FRS and HSA (“PARTIC CONTR”, employee, deferral). <b>Employer</b> is the match, non-elective and safe-harbor money (“CO CONTR”, employer, match). <b>Personal deposits</b> are money we moved in ourselves — bank deposits into the brokerage, IRAs, Roth, HSA and 529s. <b>Gifts</b> are 529 gifting deposits. When a workplace plan credits money without saying who paid, it is split between employee and employer in the same proportion as that account’s other paychecks in the year before (marked “estimated split”). Rollovers and transfers between accounts are never contributions. Past balances with a contributions-year-to-date figure add contributions for periods before the transaction history starts.</p>
+      <h3>Estimated values</h3>
+      <p>Some older balances are estimates rebuilt from contributions and market returns (for example a 403(b)’s years with its previous recordkeeper). The chart draws those months dashed and lighter, and the tooltip says “estimated”.</p>
       <h3>Rollovers, transfers and accounts that start late</h3>
       <p>Money moved between accounts (rollovers, ACAT and in-kind transfers, journals) moves value in and out of each account but is never counted as a contribution or withdrawal, so a rollover doesn’t look like saving. An account’s first valuation counts as money coming in, so a late-starting account changes the value but not the returns. When nothing we track sent that money (for example the 403(b)’s years at Vanguard before Voya), the chart marks where the account’s history starts; add older statement balances to fill it in. Kids’ 529s are left out of every figure here unless “Include kids’ 529s” is on.</p>`;
   }

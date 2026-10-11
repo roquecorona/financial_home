@@ -73,14 +73,18 @@
     };
   }
 
-  // Home "Needs attention": promos ending within 45 days that still carry a balance.
+  // Home "Needs attention": promos ending within 45 days that still carry a balance get their own alert; the rest are
+  // summed up in one quiet line (v3: so every running 0% period is visible from Home, not only the urgent ones).
   const money = (x) => Math.round(x).toLocaleString('en-US');
+  const mdY = (iso) => `${iso.slice(5, 7)}.${iso.slice(8, 10)}.${iso.slice(0, 4)}`;
   function promo_alerts() {
     const H = _H();
     const out = [];
+    const later = [];
     for (const c of cards_for_month(H.this_month())) {
       const p = c.promo;
-      if (!p || c.hidden || p.balance <= 0.005 || p.days_left > 45) continue;
+      if (!p || c.hidden || p.balance <= 0.005) continue;
+      if (p.days_left > 45) { later.push(c); continue; }
       const rate = pyt(p.rate) ? `${p.rate}%` : '0%';
       out.push({
         level: p.days_left <= 14 ? 'serious' : 'warning', kind: 'promo',
@@ -89,6 +93,120 @@
         link: '#/cards?promo=1',
       });
     }
+    if (later.length) {
+      later.sort((x, y) => cmpStr(x.promo.end, y.promo.end));
+      const n = later[0], tot = sum(later.map((c) => c.promo.balance));
+      out.push({
+        level: 'info', kind: 'promo_summary',
+        title: `${later.length} card${later.length === 1 ? '' : 's'} on a promo rate · $${money(tot)}`,
+        detail: `Next to end: ${n.name}, ${mdY(n.promo.end)} (${n.promo.days_left} days)`,
+        link: '#/cards?promo=1',
+      });
+    }
+    return out;
+  }
+
+  // ---- v3: account details ---------------------------------------------------------------------------------------
+  // card_settings also holds each account's details (opened/closed dates, credit limit, APR, statement closing day, payment
+  // due day, minimum due, autopay, annual fee, rewards), keyed by account_id (or sheet:<last4> for a card known only from the
+  // household sheet). detail_sources (JSON) says where each value came from: {field: {s: statement|sheet|sync|manual|
+  // first-seen|last-seen, d: as-of date}}. Values are pre-filled on the laptop from statements, the bank sync and the sheet.
+  const DETAIL_COLS = ['opened_date', 'closed_date', 'apr_purchase', 'statement_close_day', 'stmt_due_day', 'min_due', 'min_due_asof',
+    'annual_fee', 'rewards', 'detail_sources'];
+  const CARD_TYPES = ['credit_card', 'store_card'];
+  function parse_sources(st) {
+    try { const o = JSON.parse(g(st, 'detail_sources') || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
+  }
+
+  // card_settings rows by the account they belong to. A key that no longer names an account (a card first planned from the
+  // household sheet as "sheet:1234" and linked later, or an id replaced when two bank connections were merged) is matched
+  // to the one open card account ending in the same 4 digits, unless that account has a row of its own.
+  function settings_by_account() {
+    const DB = _DB();
+    const rows = DB.Q('SELECT * FROM card_settings');
+    const out = new Map();
+    for (const r of rows) out.set(r.card_key, r);
+    const ids = new Set(DB.Q('SELECT account_id FROM accounts').map((r) => r.account_id));
+    let cards = null;
+    for (const r of rows) {
+      if (ids.has(r.card_key)) continue;
+      const m = /(\d{4})$/.exec(String(r.card_key || ''));
+      if (!m) continue;
+      if (cards === null) {
+        cards = DB.Q(`SELECT account_id, last4 FROM accounts WHERE type IN ('credit_card','store_card')
+            AND COALESCE(status,'open') NOT IN ('closed','shares_balance')`);
+      }
+      const hit = cards.filter((a) => a.last4 === m[1]);
+      if (hit.length === 1 && !out.has(hit[0].account_id)) out.set(hit[0].account_id, { ...r, card_key: hit[0].account_id, moved_from: r.card_key });
+    }
+    return out;
+  }
+
+  // The latest household-sheet row for a card (matched on the last 4 digits; the holder must agree when both are known).
+  function sheet_row_for(a) {
+    if (!pyt(g(a, 'last4'))) return null;
+    const rows = _DB().Q('SELECT * FROM card_statements WHERE last4=? ORDER BY month DESC', [a.last4]);
+    const known = (h) => !!h && !['Joint', 'Unconfirmed', 'Business', 'Family'].includes(h); // a person, not a shared label
+    const ok = rows.filter((r) => !(known(a.holder) && known(r.holder) && r.holder !== a.holder));
+    if (!ok.length) return null;
+    return { ...ok[0], first_month: ok[ok.length - 1].month };
+  }
+
+  // One account's details: {field: {v, s, d}} (value, source, as-of) or null, plus holder/last4, next_due and promo.
+  function account_details(a, st) {
+    const H = _H(), DB = _DB();
+    const id = g(a, 'account_id');
+    if (st === undefined) st = (id ? settings_by_account().get(id) : null) || {};
+    st = st || {};
+    const src = parse_sources(st);
+    const val = (k, v, dflt = 'manual', asof = null) => {
+      if (v === null || v === undefined || v === '') return null;
+      const s0 = src[k] || {};
+      return { v, s: s0.s || dflt, d: s0.d || asof || null };
+    };
+    const isCard = CARD_TYPES.includes(g(a, 'type')), isLoan = ['mortgage', 'loan', 'heloc', 'auto_loan'].includes(g(a, 'type'));
+    const sh = isCard ? sheet_row_for(a) : null;
+    const out = { holder: g(a, 'holder'), last4: g(a, 'last4') };
+    out.opened = val('opened_date', g(st, 'opened_date'));
+    if (!out.opened && id) {
+      // nothing on record: the first date we have anything for the account, labelled "first seen"
+      const c = [DB.one('SELECT MIN(posted_date) FROM transactions WHERE account_id=?', [id]),
+        DB.one('SELECT MIN(as_of) FROM balances WHERE account_id=?', [id]),
+        DB.one('SELECT MIN(as_of) FROM manual_snapshots WHERE account_id=?', [id]), sh ? sh.first_month : null].filter((x) => pyt(x));
+      if (c.length) out.opened = { v: c.sort()[0], s: 'first-seen', d: null };
+    }
+    out.closed = val('closed_date', g(st, 'closed_date'));
+    if (!out.closed && g(a, 'status') === 'closed' && id) {
+      const c = [DB.one('SELECT MAX(posted_date) FROM transactions WHERE account_id=?', [id]),
+        DB.one('SELECT MAX(as_of) FROM balances WHERE account_id=?', [id])].filter((x) => pyt(x));
+      if (c.length) out.closed = { v: c.sort()[c.length - 1], s: 'last-seen', d: null };
+    }
+    if (isCard || isLoan) {
+      out.credit_limit = isCard ? (val('credit_limit', pyt(g(st, 'credit_limit')) ? st.credit_limit : null)
+        || (sh && pyt(sh.credit_limit) ? { v: sh.credit_limit, s: 'sheet', d: sh.month } : null)) : null;
+      out.apr_purchase = val('apr_purchase', g(st, 'apr_purchase'), 'statement');
+      out.statement_close_day = val('statement_close_day', g(st, 'statement_close_day'), 'statement');
+      const shDue = sh && /^\d+$/.test(String(g(sh, 'due_day') || '')) ? parseInt(String(sh.due_day), 10) : null;
+      // the day Pay cards plans for (set by hand, else the sheet's), else the statement's
+      out.due_day = val('due_day', pyt(g(st, 'due_day')) ? st.due_day : null)
+        || (shDue ? { v: shDue, s: 'sheet', d: sh.month } : null)
+        || val('stmt_due_day', g(st, 'stmt_due_day'), 'statement');
+      // the statement's due day when Pay cards plans for a different day (the sheet's or one entered by hand)
+      const sd = val('stmt_due_day', g(st, 'stmt_due_day'), 'statement');
+      out.statement_due_day = sd && out.due_day && out.due_day.v !== sd.v ? sd : null;
+      out.min_due = val('min_due', g(st, 'min_due'), 'statement', g(st, 'min_due_asof'));
+      out.autopay = pyt(g(st, 'autopay')) ? { v: true, s: (src.autopay || {}).s || 'manual', d: (src.autopay || {}).d || null }
+        : ((src.autopay || {}).s === 'manual' ? { v: false, s: 'manual', d: (src.autopay || {}).d || null } : null);
+      out.annual_fee = val('annual_fee', g(st, 'annual_fee'), 'statement');
+      out.rewards = val('rewards', g(st, 'rewards'));
+      if (out.due_day) {
+        const m = H.this_month();
+        let nd = H.due_date_in(m, out.due_day.v);
+        if (nd && nd < H.today_s()) nd = H.due_date_in(H.add_months(m, 1), out.due_day.v);
+        out.next_due = nd;
+      } else out.next_due = null;
+    }
+    if (isCard) out.promo = promo_info(st, g(a, 'status') === 'shares_balance' ? 0 : -(por(g(a, 'balance'), 0)));
     return out;
   }
 
@@ -96,8 +214,7 @@
     const H = _H(), DB = _DB();
     const plan = new Map();
     for (const r of DB.Q('SELECT * FROM payment_plan WHERE month=?', [m])) plan.set(r.account_id, r);
-    const settings = new Map();
-    for (const r of DB.Q('SELECT * FROM card_settings')) settings.set(r.card_key, r);
+    const settings = settings_by_account(); // v3: keys that moved (sheet → linked, merged ids) still find their card
     const sheet_month = DB.one('SELECT MAX(month) FROM card_statements WHERE month<=?', [m]);
     const sheet = pyt(sheet_month) ? DB.Q('SELECT * FROM card_statements WHERE month=?', [sheet_month]) : [];
     const sheet_by4 = new Map();
@@ -142,6 +259,7 @@
         updated_by: g(p, 'updated_by'), updated_at: g(p, 'updated_at'), paid_this_month: H.r2(sum(paid_txns.map((x) => x.amount))),
         payments: paid_txns, shares_balance: a.status === 'shares_balance', sheet_card: g(sh, 'card'),
         promo: promo_info(st, a.status === 'shares_balance' ? 0 : -(por(a.balance, 0))), // v3
+        details: account_details(a, st), // v3
       };
       const target = por(row.planned, row.statement_due);
       row.auto_paid = pyt(target) && pyt(row.paid_this_month) && row.paid_this_month >= 0.95 * target;
@@ -172,6 +290,7 @@
         hidden: pyt(g(st, 'hidden')), updated_by: g(p, 'updated_by'), updated_at: g(p, 'updated_at'), paid_this_month: null,
         payments: [], shares_balance: false, sheet_card: g(r, 'card'), sheet_month: g(r, 'month'), auto_paid: false,
         promo: promo_info(st, owed), // v3
+        details: account_details({ account_id: null, type: 'credit_card', holder: g(r, 'holder'), last4: g(r, 'last4'), balance: owed === null ? null : -owed }, st), // v3
       });
     }
     const k2 = (c) => (por(c.owed, 0) > 0.005 ? -por(c.owed, 0) : 1);
@@ -379,10 +498,49 @@
     if (has(b, 'promo_rate')) promo.promo_rate = H.v_num(g(b, 'promo_rate'), 'promo_rate', false, 0, 100);
     if (has(b, 'promo_note')) promo.promo_note = H.v_str(g(b, 'promo_note'), 'promo_note', false, 200);
     for (const k of ['promo_apr_end', 'promo_balance', 'promo_rate', 'promo_note']) if (!has(promo, k) && has(cur, k)) promo[k] = cur[k];
+    // v3: account details. Only written when sent or already stored (app.py-shaped calls write the same columns as before);
+    // a value that changes is marked as entered by hand in detail_sources.
+    const det = {};
+    const dateish = (v, k) => {
+      if (v === null || v === undefined || String(v).trim() === '') return null;
+      const t = String(v).trim();
+      if (!/^\d{4}(-\d{2}(-\d{2})?)?$/.test(t)) throw new H.ApiError(400, `${k} must be a date like 2019-05-14 (or a year)`);
+      if (t.length === 10) H.v_date(t, k);
+      return t;
+    };
+    const day = (v, k) => { const d = H.v_int(v, k); if (d !== null && d !== undefined && !(d >= 1 && d <= 31)) throw new H.ApiError(400, `${k} must be 1-31`); return d === undefined ? null : d; };
+    const PARSE = {
+      opened_date: dateish, closed_date: dateish, apr_purchase: (v, k) => H.v_num(v, k, false, 0, 100), statement_close_day: day,
+      stmt_due_day: day, min_due: (v, k) => H.v_num(v, k, false, 0), min_due_asof: (v, k) => H.v_date(v, k),
+      annual_fee: (v, k) => H.v_num(v, k, false, 0), rewards: (v, k) => H.v_str(v, k, false, 120),
+    };
+    for (const k of Object.keys(PARSE)) if (has(b, k)) det[k] = PARSE[k](g(b, k), k);
+    if (!r) { // a row stored under an older key (sheet:1234, a merged id) carries over to the account
+      const moved = settings_by_account().get(key);
+      if (moved && moved.moved_from) {
+        for (const k of [...DETAIL_COLS, 'promo_apr_end', 'promo_balance', 'promo_rate', 'promo_note']) {
+          if (k.startsWith('promo_') ? !has(promo, k) : !has(det, k)) (k.startsWith('promo_') ? promo : det)[k] = g(moved, k);
+        }
+        for (const k of ['display_name', 'pay_from', 'due_day', 'credit_limit', 'autopay', 'hidden']) if (!has(b, k) && !has(cur, k)) cur[k] = g(moved, k);
+      }
+    }
+    const srcs = parse_sources(has(det, 'detail_sources') ? det : cur);
+    let srcChanged = false;
+    for (const k of [...Object.keys(PARSE), 'due_day', 'credit_limit', 'autopay']) {
+      if (!has(b, k) || k === 'min_due_asof') continue;
+      const norm = (v) => (k === 'autopay' ? (pyt(v) ? '1' : '0') : v === null || v === undefined || v === '' ? null : String(v));
+      const nv = has(det, k) ? det[k] : cur[k];
+      if (norm(nv) === norm(r ? g(r, k) : null)) continue;
+      if (norm(nv) === null) delete srcs[k]; else srcs[k] = { s: 'manual', d: H.today_s() };
+      srcChanged = true;
+    }
+    if (has(b, 'min_due') && has(det, 'min_due') && det.min_due !== null && !has(b, 'min_due_asof')) det.min_due_asof = H.today_s();
+    for (const k of DETAIL_COLS) if (!has(det, k) && has(cur, k)) det[k] = cur[k];
+    if (srcChanged) det.detail_sources = Object.keys(srcs).length ? JSON.stringify(srcs) : null;
     await DB.upsert('card_settings', {
       card_key: key, display_name: g(cur, 'display_name'), due_day: g(cur, 'due_day'), pay_from: g(cur, 'pay_from'),
       credit_limit: g(cur, 'credit_limit'), autopay: por(g(cur, 'autopay'), 0), hidden: por(g(cur, 'hidden'), 0),
-      updated_by: DB.user, updated_at: H.now_s(), ...promo,
+      updated_by: DB.user, updated_at: H.now_s(), ...promo, ...det,
     }, ['card_key']);
     return { ok: true };
   }
@@ -571,7 +729,7 @@
 
   // ---- registration ------------------------------------------------------------------------------------------------
   const Hh = _H();
-  Object.assign(Hh, { card_key_for, cards_for_month, bill_suggestions, promo_info, promo_alerts });
+  Object.assign(Hh, { card_key_for, cards_for_month, bill_suggestions, promo_info, promo_alerts, settings_by_account, account_details });
   const A = _API();
   Object.assign(A.get, { '/api/cards': api_cards, '/api/bills': api_bills });
   Object.assign(A.post, {
