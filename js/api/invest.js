@@ -295,6 +295,16 @@
       });
     }
     lines.sort((x, y) => { const a = x.date || '', b = y.date || ''; return a < b ? 1 : a > b ? -1 : 0; });
+    // properties.rental_start / rental_end (v3): months outside the rental period are not rental P&L (e.g. a former
+    // primary residence); they are returned apart as pre_rental (costs of living there) and never counted in the KPIs
+    const rs = /^\d{4}-\d{2}/.test(p.rental_start || '') ? p.rental_start.slice(0, 7) : null;
+    const re = /^\d{4}-\d{2}/.test(p.rental_end || '') ? p.rental_end.slice(0, 7) : null;
+    let pre = [];
+    if (rs || re) {
+      pre = lines.filter((ln) => (rs && ln.month < rs) || (re && ln.month > re));
+      const outSet = new Set(pre);
+      for (let i = lines.length - 1; i >= 0; i--) if (outSet.has(lines[i])) lines.splice(i, 1);
+    }
     const years = [...new Set(lines.map((ln) => ln.month.slice(0, 4)))].sort().reverse();
     const sel = lines.filter((ln) => !year || ln.month.startsWith(year));
     const months = {};
@@ -327,7 +337,25 @@
     const categories = [...cats.entries()].map(([k, v], i) => [k, v, i])
       .sort((x, y) => (y[1] - x[1]) || (x[2] - y[2]))
       .map(([k, v]) => ({ name: k, total: r2(v) }));
-    return { lines: sel, months: mrows, categories, kpis: kp, years };
+    const res = { lines: sel, months: mrows, categories, kpis: kp, years };
+    if (pre.length) {
+      const by_year = {}, by_cat = new Map();
+      for (const ln of pre) {
+        const y = ln.month.slice(0, 4);
+        const yy = by_year[y] || (by_year[y] = { year: y, income: 0, expense: 0, debt: 0 });
+        yy[ln.kind] += ln.amount;
+        if (ln.kind !== 'income') by_cat.set(ln.category, (by_cat.get(ln.category) || 0) + ln.amount);
+      }
+      const ylist = Object.values(by_year).sort((a, b) => (a.year < b.year ? 1 : -1))
+        .map((x) => ({ year: x.year, income: r2(x.income), expense: r2(x.expense), debt: r2(x.debt), total_cost: r2(x.expense + x.debt - x.income) }));
+      res.pre_rental = {
+        rental_start: p.rental_start || null, rental_end: p.rental_end || null, label: 'Primary home costs (before it was a rental)',
+        total_cost: r2(H.pysum(ylist.map((x) => x.total_cost))), years: ylist,
+        categories: [...by_cat.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ name: k, total: r2(v) })),
+        lines: pre.filter((ln) => !year || ln.month.startsWith(year)).slice(0, 300),
+      };
+    }
+    return res;
   }
 
   function mortgage_balance(p) {
@@ -351,7 +379,7 @@
   // ---- v3 property additions (ownership share, a property's own bank account, owner distributions, sales).
   // All additive: on a database without the new columns every property is 100% ours and nothing changes.
   const NOT_PROPERTY_TAG = 'not-property-specific';
-  const PROPERTY_COLS = ['ownership_pct', 'sale_date', 'sale_price', 'sale_proceeds', 'value_as_of', 'value_source'];
+  const PROPERTY_COLS = ['ownership_pct', 'sale_date', 'sale_price', 'sale_proceeds', 'value_as_of', 'value_source', 'rental_start', 'rental_end'];
   // our share of a property (properties.ownership_pct is a percent; NULL / missing = 100%)
   function property_share(p) {
     const v = p ? p.ownership_pct : null;
@@ -693,6 +721,8 @@
     if (has('sale_proceeds')) vals.sale_proceeds = H.v_num(b.sale_proceeds, 'sale_proceeds', false, -1e9, 1e9);
     if (has('value_source')) vals.value_source = H.v_str(b.value_source, 'value_source', false, 300);
     if (has('value_as_of')) vals.value_as_of = H.v_date(b.value_as_of, 'value_as_of');
+    if (has('rental_start')) vals.rental_start = H.v_date(b.rental_start, 'rental_start');
+    if (has('rental_end')) vals.rental_end = H.v_date(b.rental_end, 'rental_end');
     let pid = H.v_int(b.id, 'id');
     if (pid) await db().update('properties', { id: pid }, vals);
     else {

@@ -33,6 +33,8 @@
         <div class="field"><label>Monthly rent</label><span class="money-wrap"><input class="input" name="rent" inputmode="decimal" value="${pr.rent ?? ''}"></span></div>
         <div class="field"><label>Tenant</label><input class="input" name="tenant" value="${pr.tenant || ''}"></div>
         <div class="field"><label>Lease ends</label><input class="input" type="date" name="lease_end" value="${pr.lease_end || ''}"></div>
+        <div class="field"><label>Rental since</label><input class="input" type="date" name="rental_start" value="${pr.rental_start || ''}"><span class="hint">Earlier months count as primary-home costs, not rental P&amp;L</span></div>
+        <div class="field"><label>Rental until</label><input class="input" type="date" name="rental_end" value="${pr.rental_end || ''}"><span class="hint">Optional, e.g. if you moved back in</span></div>
         <div class="field"><label>Entity name in transactions</label><select class="input" name="entity">${F.entityOptions(pr.entity || pr.name || '', pr.name || 'household')}</select></div>
         <div class="field full"><label>Notes</label><textarea class="input" name="notes" rows="2">${pr.notes || ''}</textarea></div></div>`,
       onSubmit: async (v) => {
@@ -226,6 +228,14 @@
       ${txns.length ? '' : F.empty('No bank transactions in this period')}</div></section>`;
   }
 
+  // months before properties.rental_start (or after rental_end): costs of living there, kept out of the rental P&L
+  function preRentalPanel(pr) {
+    return html`<section class="panel span-8"><div class="panel-head"><h2>Before it was a rental</h2>
+      <span class="sub">Primary home costs${pr.rental_start ? ` before ${fmt.date(pr.rental_start, { year: true })}` : ''}${pr.rental_end ? ` and after ${fmt.date(pr.rental_end, { year: true })}` : ''}; not in this rental's P&amp;L</span></div>
+      <div class="panel-body flush"><div class="table-wrap"><table class="t"><thead><tr><th>Year</th><th class="num">Mortgage</th><th class="num">Other costs</th><th class="num">Total cost</th></tr></thead>
+      <tbody>${pr.years.map((y) => html`<tr><td>${y.year}</td><td class="num" data-label="Mortgage">${fmt.amt(-y.debt, { cents: false })}</td><td class="num" data-label="Other costs">${fmt.amt(-y.expense, { cents: false })}</td><td class="num key">${fmt.amt(-y.total_cost, { cents: false })}</td></tr>`)}</tbody></table></div>
+      ${pr.lines.length ? html`<details class="panel-foot"><summary class="small">${pr.lines.length} entries</summary><div class="table-wrap"><table class="t"><tbody>${pr.lines.map((l) => html`<tr><td class="nowrap">${fmt.date(l.date, { year: true })}</td><td>${l.description}</td><td class="hide-sm">${l.category}</td><td class="num">${l.kind === 'income' ? '+' : '−'}${fmt.amt(Math.abs(l.amount))}</td></tr>`)}</tbody></table></div></details>` : ''}</div></section>`;
+  }
   async function detail(root, r, ctl) {
     const year = r.params.year ?? String(new Date().getFullYear());
     const d = await F.get('/api/property', { id: r.id, year });
@@ -256,6 +266,7 @@
           <tbody>${d.pnl.lines.map((l, i) => html`<tr class="${l.source !== 'sheet' ? 'clickable' : ''}" data-line="${i}" ${l.source !== 'sheet' ? raw('tabindex="0"') : ''}><td class="nowrap">${fmt.date(l.date, { year: true })}</td><td>${l.description}${l.flagged ? html` <span class="pill warn" title="${l.flagged}">${l.flagged.length > 24 ? 'Check' : l.flagged}</span>` : ''}${l.receipt_url ? html` <span class="pill info">Receipt</span>` : ''}</td>
             <td class="hide-sm">${l.category}</td><td data-label=""><span class="pill ${SRC[l.source][0]}">${SRC[l.source][1]}</span></td><td class="num key ${l.kind === 'income' ? 'pos' : ''}">${l.kind === 'income' ? '+' : '−'}${fmt.amt(Math.abs(l.amount))}</td></tr>`)}</tbody></table></div>
           ${d.pnl.lines.length ? '' : F.empty('Nothing recorded for this period')}</div></section>
+        ${d.pnl.pre_rental ? preRentalPanel(d.pnl.pre_rental) : ''}
         <section class="span-4 stack">
           ${(pr.bank_accounts || []).map((a) => html`<div class="panel"><div class="panel-head"><h2>Bank account</h2><span class="sub">Not in our net worth, cash or spending</span></div><div class="panel-body"><dl class="kv">
             <dt>Account</dt><dd><a href="#/accounts/${encodeURIComponent(a.account_id)}">${a.label}</a></dd>
@@ -263,6 +274,7 @@
           ${d.distributions ? distPanel(d.distributions) : ''}
           <div class="panel"><div class="panel-head"><h2>Profile</h2></div><div class="panel-body"><dl class="kv">
             <dt>Purchased</dt><dd>${pr.purchase_date ? fmt.date(pr.purchase_date, { year: true }) : '—'}${pr.purchase_price ? ' for ' + fmt.money(pr.purchase_price, { cents: false }) : ''}</dd>
+            ${pr.rental_start || pr.rental_end ? html`<dt>Rented</dt><dd>${pr.rental_start ? 'Since ' + fmt.date(pr.rental_start, { year: true }) : ''}${pr.rental_end ? (pr.rental_start ? ' until ' : 'Until ') + fmt.date(pr.rental_end, { year: true }) : ''}</dd>` : ''}
             ${shareOf(pr) !== 1 ? html`<dt>Ownership</dt><dd>${shareWords(pr)} ours (${sharePct(pr)}), co-owned with family</dd>` : ''}
             <dt>Estimated value</dt><dd>${pr.est_value ? fmt.money(pr.est_value, { cents: false }) : '—'}${pr.est_value && pr.value_source ? html`<span class="small ink2" style="display:block">${pr.value_source}${pr.value_as_of && !String(pr.value_source).includes(pr.value_as_of) ? ' · ' + fmt.date(pr.value_as_of, { year: true }) : ''}</span>` : ''}</dd>
             ${shareOf(pr) !== 1 && pr.our_value ? html`<dt>Our share</dt><dd>${fmt.money(pr.our_value, { cents: false })} <span class="small ink2">counts toward net worth</span></dd>` : ''}
