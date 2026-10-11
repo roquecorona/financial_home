@@ -254,6 +254,13 @@
   const LEDGER_DEPOSIT = new Set(['deposit_in', 'deposit_refund']);
   const LEDGER_OWNER = new Set(['owner_distribution', 'owner_draw']);
 
+  // a property's own bank accounts (entity = the property's, kept out of household totals), e.g. a co-owned one
+  function own_accounts(p) {
+    if (!p.entity || !db().columns('accounts').includes('include_in_totals')) return [];
+    return Q('SELECT account_id FROM accounts WHERE entity=? AND COALESCE(include_in_totals,1)=0', [p.entity]).map((r) => r.account_id);
+  }
+  const DEPOSIT_SUB = /security deposit|tenant & housing-authority refund/i;
+
   function property_pnl(p, year = null) {
     const H = h();
     const ent = p.entity || p.name;
@@ -274,11 +281,13 @@
         description: r.description || cat, source: 'sheet', ref: r.entry_id, flagged: r.flagged,
       });
     }
+    const own_acct = own_accounts(p).length > 0;
     for (const r of Q(`SELECT t.txn_id, t.posted_date, t.amount, t.description, t.category, t.subcategory FROM transactions t
             JOIN accounts a USING(account_id) WHERE t.entity=? AND t.is_transfer=0 AND t.pending=0 AND t.posted_date IS NOT NULL
             AND a.type NOT IN ('ira','hsa','401k','403b','brokerage','529')`, [ent])) {
       const m = r.posted_date.slice(0, 7);
       if (sheet_months.has(m)) continue;
+      if (own_acct && DEPOSIT_SUB.test(r.subcategory || '')) continue;  // a security deposit held or refunded (cash flow, not P&L)
       const sub = r.subcategory || r.category || 'Other';
       const kind = r.amount > 0 ? 'income' : /mortgage|pool loan|heloc/i.test(sub) ? 'debt' : 'expense';
       lines.push({
@@ -491,6 +500,13 @@
         date: r.date, amount: r2(Math.abs(r.amount || 0)), description: r.description, person: r.person || null, flag: r.flagged });
       if (LEDGER_DEPOSIT.has(typ) || LEDGER_OWNER.has(typ)) M(r.month).sources.add('sheet');
     }
+    const ledMonths = new Set(led.map((r) => r.month));
+    for (const t of Q(`SELECT posted_date, amount, subcategory FROM transactions WHERE entity=? AND is_transfer=0 AND pending=0
+        AND posted_date IS NOT NULL`, [ent])) {
+      const m = t.posted_date.slice(0, 7);
+      if (ledMonths.has(m) || !DEPOSIT_SUB.test(t.subcategory || '')) continue;
+      M(m).deposits += t.amount; M(m).sources.add('bank');
+    }
     for (const t of Q(`SELECT txn_id, posted_date, amount FROM transactions WHERE entity=? AND subcategory='Owner distribution'
         AND posted_date IS NOT NULL`, [ent])) {
       if (linked.has(t.txn_id)) continue;
@@ -621,9 +637,53 @@
     const cf = led.length ? property_cashflow(p, led) : null;
     if (cf) {
       if (year) cf.months = cf.months.filter((m) => m.month.startsWith(year));
+      cf.paid_to_owners = r2(H.pysum(cf.months.map((m) => m.take_home)));
       out.cashflow = cf;
+      out.register = property_register(p, led, pnl, year);
+      delete out.bank_txns;
     }
     return out;
+  }
+
+  // v3: the register of a property with its own account: every movement of its money in one list, newest first. Months
+  // the bank feed covers show the bank's own rows (editable); earlier months show the sheet's lines (rent, costs,
+  // deposits, owner payouts); entries added by hand show in any month. Each row: date, description, category, amount (+ in).
+  function property_register(p, led, pnl, year) {
+    const H = h();
+    const ids = (p.bank_accounts || []).map((a) => a.account_id);
+    const bank = ids.length ? Q(`SELECT ${H.TXN_COLS} FROM transactions t JOIN accounts a USING(account_id)
+        WHERE t.account_id IN (${ids.map(() => '?').join(',')}) AND t.posted_date IS NOT NULL ORDER BY t.posted_date`, ids) : [];
+    // the bank feed covers months from the start of its latest unbroken run (no gap over 62 days); a run starting after
+    // the 5th leaves that month to the sheet. Months with no sheet line at all use any bank rows.
+    let i = bank.length - 1;
+    while (i > 0 && (Date.parse(bank[i].posted_date) - Date.parse(bank[i - 1].posted_date)) / 864e5 <= 62) i--;
+    const run0 = bank.length ? bank[Math.max(i, 0)].posted_date : null;
+    const bank_from = run0 ? (+run0.slice(8, 10) <= 5 ? run0.slice(0, 7) : H.add_months(run0.slice(0, 7), 1)) : null;
+    const sheetMonths = new Set(led.map((r) => r.month));
+    const useBank = (m) => (bank_from && m >= bank_from) || !sheetMonths.has(m);
+    const inYear = (m) => !year || m.startsWith(year);
+    const rows = [];
+    for (const t of bank) {
+      const m = t.posted_date.slice(0, 7);
+      if (!useBank(m) || !inYear(m)) continue;
+      rows.push({ date: t.posted_date, description: t.merchant_name, category: t.subcategory || t.category || '', person: t.person || null,
+        amount: r2(t.amount), source: 'bank', ref: t.txn_id });
+    }
+    for (const r of led) {
+      if (useBank(r.month) || !inYear(r.month)) continue;
+      const typ = (r.type || '').toLowerCase();
+      const out_ = !(typ.startsWith('rent') || typ === 'other_income' || typ === 'deposit_in');
+      const cat = LEDGER_OWNER.has(typ) ? 'Owner distribution' : typ === 'deposit_in' ? 'Security deposit received'
+        : typ === 'deposit_refund' ? 'Security deposit refunded' : (LEDGER_CATS[typ] || 'Repairs & other');
+      rows.push({ date: (r.date && /^\d{4}-\d{2}-\d{2}$/.test(r.date)) ? r.date : H.month_end(r.month), description: r.description || cat,
+        category: cat, person: r.person || null, amount: r2(out_ ? -Math.abs(r.amount || 0) : Math.abs(r.amount || 0)), source: 'sheet', ref: r.entry_id });
+    }
+    for (const l of pnl.lines) if (l.source === 'manual') {
+      rows.push({ date: l.date, description: l.description, category: l.category, person: null,
+        amount: l.kind === 'income' ? l.amount : -l.amount, source: 'manual', ref: l.ref });
+    }
+    rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    return { rows, bank_from };
   }
 
   // ---------------------------------------------------------------- writes
