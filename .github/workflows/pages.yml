@@ -23,6 +23,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: Insert the Supabase publishable key (kept as a repository secret, never committed)
+        env:
+          KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then echo "::error::Add the repository secret SUPABASE_PUBLISHABLE_KEY (Supabase > finance > Settings > API Keys > publishable key)"; exit 1; fi
+          case "$KEY" in sb_secret_*|*service_role*) echo "::error::That is a secret key; use the publishable key"; exit 1;; esac
+          python3 - <<'PY'
+          import os
+          p = 'js/data/supabase-config.js'
+          s = open(p).read()
+          assert '__SUPABASE_PUBLISHABLE_KEY__' in s
+          open(p, 'w').write(s.replace('__SUPABASE_PUBLISHABLE_KEY__', os.environ['KEY']))
+          PY
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .   # the repo root is the site (code only; .gitignore keeps data out)

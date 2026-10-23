@@ -1,7 +1,10 @@
 /* Financial Home — data layer (DB contract, see ARCHITECTURE.md).
    An in-memory sql.js SQLite database with the same schema as finances.db. Reads are synchronous SQL (DB.Q/one/row).
    Backends:
-     'supabase' (browser): every finance table is downloaded (paged, 1000 rows) into sql.js and cached in IndexedDB per user.
+     'supabase' (browser): the first visit downloads every finance table once (paged by primary key, only the columns
+                           the app keeps) into sql.js and caches it in IndexedDB per user and project. After that a refresh
+                           asks the server which tables changed (changed_tables RPC, one call) and downloads only rows
+                           written since the last refresh (_changed_at, index-backed) plus deletions (_deleted tombstones).
                            Writes go to Supabase first, then the returned rows are mirrored into sql.js.
      'local'    (Node tests, ?local=1 dev mode): opens a SQLite file with sql.js. Writes are local only.
    Classic script: no bundler, loads in the browser and in Node. */
@@ -11,7 +14,8 @@
   const CONCURRENCY = 6;
   const IDB_NAME = 'financial-home';
   const IDB_STORE = 'datasets';
-  const CACHE_VERSION = 1;
+  const CACHE_VERSION = 2;
+  const OVERLAP_MS = 5 * 60000;   // re-read the last 5 minutes on every refresh (commit-order safety; applying twice is harmless)
 
   const DB = g.DB = g.DB || {};
   Object.assign(DB, {
@@ -200,7 +204,8 @@
       });
     } finally { d.close(); }
   }
-  const cacheKey = (email) => 'v' + CACHE_VERSION + ':' + String(email || '').toLowerCase();
+  const project = () => String((g.SUPABASE_CONFIG && g.SUPABASE_CONFIG.url) || '').replace(/^https?:\/\//, '').split('.')[0];
+  const cacheKey = (email) => 'v' + CACHE_VERSION + ':' + project() + ':' + String(email || '').toLowerCase();
   async function cacheGet(email) {
     try { return await idbDo('readonly', (s) => s.get(cacheKey(email))); } catch (e) { return null; }
   }
@@ -209,7 +214,8 @@
     try {
       const bytes = DB._db.export(); // note: export() resets prepared statements; none are kept open
       registerFunctions(DB._db);
-      await idbDo('readwrite', (s) => s.put({ bytes, savedAt: new Date().toISOString(), schema: g.SQLITE_SCHEMA.length }, cacheKey(email)));
+      await idbDo('readwrite', (s) => s.put({ bytes, savedAt: new Date().toISOString(), schema: g.SQLITE_SCHEMA.length,
+        cursors: DB._cursors || {}, serverCols: DB._serverCols || null }, cacheKey(email)));
     } catch (e) { console.warn('[DB] cache save failed', e); }
   }
   DB.clearCache = async (email) => {
@@ -222,7 +228,7 @@
   /* ------------------------------------------------------------------ Supabase download */
   function sb() {
     if (!DB._client) throw apiError(401, 'Please sign in');
-    return DB._client.schema((g.SUPABASE_CONFIG && g.SUPABASE_CONFIG.schema) || 'finance');
+    return DB._client.schema((g.SUPABASE_CONFIG && g.SUPABASE_CONFIG.schema) || 'public');
   }
   function sbErr(error, what) {
     const status = error && (error.status || error.statusCode);
@@ -247,14 +253,67 @@
     return results;
   }
 
-  // Download one page. Order by _rowid when the server table carries it (keeps SQLite's original row order),
-  // otherwise by the primary key so paging is stable.
-  async function fetchPage(table, from, order, withCount) {
-    let q = sb().from(table).select('*', withCount ? { count: 'exact' } : undefined);
-    for (const c of order) q = q.order(c, { ascending: true });
-    return q.range(from, from + PAGE - 1);
+  // Columns to download for a table: the ones sql.js keeps that the server has, plus _changed_at (the refresh cursor).
+  async function serverCols() {
+    if (DB._serverCols) return DB._serverCols;
+    const { data, error } = await sb().rpc('table_columns');
+    if (error) throw sbErr(error, 'load the table list');
+    DB._serverCols = data || {};
+    return DB._serverCols;
+  }
+  function selectList(table) {
+    const have = new Set((DB._serverCols || {})[table] || []);
+    const cols = (DB._cols[table] || []).filter((c) => have.has(c));
+    if (have.has('_changed_at')) cols.push('_changed_at');
+    return cols.map((c) => `"${c}"`).join(',');
+  }
+  const latest = (a, b) => (!a ? b : !b ? a : (a > b ? a : b));
+  const minus = (iso, ms) => new Date(new Date(iso).getTime() - ms).toISOString();
+
+  // All rows of a table, paged by primary key (no exact counts: stop at a short page).
+  async function fetchTable(table, onPage) {
+    const order = colsPK(table), cols = selectList(table);
+    const rows = []; let top = null;
+    for (let from = 0; ; from += PAGE) {
+      let q = sb().from(table).select(cols);
+      for (const c of order) q = q.order(c, { ascending: true });
+      const res = await q.range(from, from + PAGE - 1);
+      if (res.error) throw sbErr(res.error, `load ${table}`);
+      const page = res.data || [];
+      for (const r of page) { top = latest(top, r._changed_at || null); rows.push(r); }
+      if (onPage) onPage(page.length);
+      if (page.length < PAGE) break;
+    }
+    return { rows, top };
+  }
+  // Rows of a table written after `since` (oldest first), paged.
+  async function fetchChanged(table, since) {
+    const cols = selectList(table), pk = colsPK(table);
+    const rows = []; let top = null;
+    for (let from = 0; ; from += PAGE) {
+      let q = sb().from(table).select(cols).gt('_changed_at', since).order('_changed_at', { ascending: true });
+      for (const c of pk) q = q.order(c, { ascending: true });
+      const res = await q.range(from, from + PAGE - 1);
+      if (res.error) throw sbErr(res.error, `load ${table}`);
+      const page = res.data || [];
+      for (const r of page) { top = latest(top, r._changed_at || null); rows.push(r); }
+      if (page.length < PAGE) break;
+    }
+    return { rows, top };
+  }
+  async function fetchDeleted(since) {
+    const out = [];
+    for (let from = 0; ; from += PAGE) {
+      const res = await sb().from('_deleted').select('id,tbl,pk,deleted_at').gt('deleted_at', since)
+        .order('deleted_at', { ascending: true }).order('id', { ascending: true }).range(from, from + PAGE - 1);
+      if (res.error) throw sbErr(res.error, 'load deletions');
+      out.push(...(res.data || []));
+      if ((res.data || []).length < PAGE) break;
+    }
+    return out;
   }
 
+  // First visit: every table once. Cursors start at the server's clock taken before the download (minus the overlap).
   async function downloadAll(onProgress) {
     const SQL = DB._SQL;
     const db = emptyDb(SQL);
@@ -262,49 +321,68 @@
     const state = { tablesDone: 0, tablesTotal: tables.length, rows: 0, table: null };
     const report = (extra) => { if (onProgress) try { onProgress({ ...state, ...extra }); } catch (e) { /* ignore */ } };
     report({ phase: 'start' });
-    const pages = {}; // table -> array of row arrays
-    const orderOf = {};
-    // First page of every table (with exact count), limited concurrency.
-    const firsts = tables.map((t) => async () => {
-      let order = ['_rowid'];
-      let res = await fetchPage(t, 0, order, true);
-      if (res.error && (res.error.code === '42703' || /_rowid/.test(res.error.message || ''))) {
-        order = colsPK(t);
-        res = await fetchPage(t, 0, order, true);
-      }
-      if (res.error) throw sbErr(res.error, `load ${t}`);
-      orderOf[t] = order;
-      pages[t] = [res.data || []];
-      state.rows += (res.data || []).length;
-      const total = res.count == null ? (res.data || []).length : res.count;
-      const more = [];
-      for (let from = PAGE; from < total; from += PAGE) more.push(from);
-      if (!more.length) { state.tablesDone++; report({ table: t, phase: 'table' }); }
-      return { t, more };
-    });
-    const firstRes = await pool(firsts, CONCURRENCY);
-    const rest = [];
-    for (const { t, more } of firstRes) {
-      if (!more.length) continue;
-      let left = more.length;
-      more.forEach((from, k) => rest.push(async () => {
-        const res = await fetchPage(t, from, orderOf[t], false);
-        if (res.error) throw sbErr(res.error, `load ${t}`);
-        pages[t][k + 1] = res.data || [];
-        state.rows += (res.data || []).length;
-        if (--left === 0) { state.tablesDone++; report({ table: t, phase: 'table' }); }
-        else report({ table: t, phase: 'page' });
-      }));
-    }
-    await pool(rest, CONCURRENCY);
-    // Fill sql.js in one transaction.
+    await serverCols();
+    const ch = await sb().rpc('changed_tables', { p_since: null });
+    if (ch.error) throw sbErr(ch.error, 'check for changes');
+    const start = (ch.data && ch.data.now) || new Date().toISOString();
+    const got = {};
+    await pool(tables.map((t) => async () => {
+      got[t] = await fetchTable(t, (n) => { state.rows += n; report({ table: t, phase: 'page' }); });
+      state.tablesDone++; report({ table: t, phase: 'table' });
+    }), CONCURRENCY);
     db.exec('BEGIN');
     try {
-      for (const t of tables) insertRows(db, t, [].concat(...(pages[t] || [])), 'INSERT');
+      for (const t of tables) insertRows(db, t, got[t].rows, 'INSERT');
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw e; }
+    const cursors = { _deleted: start };
+    for (const t of tables) cursors[t] = latest(got[t].top, start);
     report({ phase: 'done' });
-    return db;
+    return { db, cursors };
+  }
+
+  // Later visits: only what changed since the cursors, applied in time order (a delete then a re-insert stays inserted).
+  async function applyChanges() {
+    const cur = DB._cursors || {};
+    const tables = DB.tables();
+    const floor = tables.reduce((a, t) => (cur[t] && (!a || cur[t] < a) ? cur[t] : a), cur._deleted || null);
+    if (!floor) return null; // no cursors (old cache): caller does a full download
+    await serverCols();
+    const ch = await sb().rpc('changed_tables', { p_since: minus(floor, OVERLAP_MS) });
+    if (ch.error) throw sbErr(ch.error, 'check for changes');
+    const changed = (ch.data && ch.data.tables) || {};
+    const todo = tables.filter((t) => changed[t] && (!cur[t] || changed[t] > minus(cur[t], OVERLAP_MS)));
+    const events = []; const next = { ...cur };
+    await pool(todo.map((t) => async () => {
+      const { rows, top } = await fetchChanged(t, minus(cur[t] || floor, OVERLAP_MS));
+      for (const r of rows) events.push({ at: r._changed_at || '', kind: 'up', t, r });
+      next[t] = latest(cur[t], top);
+    }), CONCURRENCY);
+    const dels = Object.keys(changed).some((t) => !cur[t] || changed[t] > minus(cur[t], OVERLAP_MS))
+      ? await fetchDeleted(minus(cur._deleted || floor, OVERLAP_MS)) : [];
+    for (const d of dels) if (DB._cols[d.tbl]) events.push({ at: d.deleted_at, kind: 'del', t: d.tbl, pk: d.pk });
+    // Everything stamped before the server's clock at this check has now been seen (each query re-reads OVERLAP_MS
+    // before its cursor, so rows committed late with an earlier stamp are still picked up next time).
+    const now = (ch.data && ch.data.now) || null;
+    if (now) { for (const t of tables) next[t] = latest(next[t], now); next._deleted = latest(next._deleted, now); }
+    events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    if (events.length) {
+      const db = need();
+      db.exec('BEGIN');
+      try {
+        for (const e of events) {
+          if (e.kind === 'up') insertRows(db, e.t, [e.r], 'INSERT OR REPLACE');
+          else {
+            const w = whereOf(e.pk || {});
+            const st = db.prepare(`DELETE FROM ${qi(e.t)} WHERE ${w.sql}`);
+            try { st.run(w.args); } finally { st.free(); }
+          }
+        }
+        db.exec('COMMIT');
+      } catch (err) { db.exec('ROLLBACK'); throw err; }
+    }
+    DB._cursors = next;
+    return { tables: todo.length, rows: events.length };
   }
   function colsPK(t) { const pk = DB._pk[t]; return pk && pk.length ? pk : (DB._cols[t] || []).slice(0, 1); }
 
@@ -359,8 +437,10 @@
     DB._onRefreshed = opts.onRefreshed || null;
     { const tmp = emptyDb(SQL); introspect(tmp); tmp.close(); } // column/pk metadata for the download
     const cached = opts.useCache === false ? null : await cacheGet(DB.email);
-    if (cached && cached.bytes && cached.schema === g.SQLITE_SCHEMA.length) {
+    if (cached && cached.bytes && cached.schema === g.SQLITE_SCHEMA.length && cached.cursors) {
       adopt(new SQL.Database(new Uint8Array(cached.bytes)));
+      DB._cursors = cached.cursors;
+      DB._serverCols = cached.serverCols || null;
       DB.loadedAt = cached.savedAt;
       DB.fromCache = true;
       DB.ready = true;
@@ -369,7 +449,9 @@
       setTimeout(() => { DB.refresh({ background: true }).catch((e) => console.warn('[DB] background refresh failed', e)); }, 50);
       return DB;
     }
-    adopt(await downloadAll(DB._onProgress));
+    const first = await downloadAll(DB._onProgress);
+    adopt(first.db);
+    DB._cursors = first.cursors;
     DB.loadedAt = new Date().toISOString();
     DB.fromCache = false;
     DB.ready = true;
@@ -378,26 +460,27 @@
     return DB;
   };
 
-  // Re-download everything from Supabase and swap it in. Returns true when new data was adopted.
-  DB.refresh = async ({ background = false } = {}) => {
+  // Bring the local copy up to date: only rows changed since the last refresh (a full download only when there is no
+  // saved copy with cursors, or when { full: true }). Returns true when the data was updated.
+  DB.refresh = async ({ background = false, full = false } = {}) => {
     if (DB.backend !== 'supabase') return false;
     if (DB._refreshing) return DB._refreshing;
     DB.refreshing = true; emit('refreshing');
     DB._refreshing = (async () => {
       try {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const gen = DB._writeGen;
+        let res = full || !DB._db ? null : await applyChanges();
+        if (!res) {
           const fresh = await downloadAll(background ? null : DB._onProgress);
-          if (gen !== DB._writeGen && attempt === 0) { fresh.close(); continue; } // a write landed mid-download: fetch again
-          adopt(fresh);
-          DB.loadedAt = new Date().toISOString();
-          DB.fromCache = false;
-          await cachePut(DB.email);
-          emit('refreshed');
-          if (DB._onRefreshed) { try { DB._onRefreshed(); } catch (e) { console.warn(e); } }
-          return true;
+          adopt(fresh.db);
+          DB._cursors = fresh.cursors;
+          res = { full: true };
         }
-        return false;
+        DB.loadedAt = new Date().toISOString();
+        DB.fromCache = false;
+        await cachePut(DB.email);
+        emit('refreshed');
+        if (DB._onRefreshed && (res.full || res.rows)) { try { DB._onRefreshed(); } catch (e) { console.warn(e); } }
+        return true;
       } finally { DB.refreshing = false; DB._refreshing = null; emit('idle'); }
     })();
     return DB._refreshing;

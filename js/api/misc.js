@@ -279,7 +279,7 @@
     const thr = H.setting('large_txn_threshold', '1000');
     // app.py reports the SQLite file path and size; online the data lives in Supabase and is mirrored in memory.
     const db = DB();
-    const db_path = db && db.backend === 'supabase' ? 'Supabase (finance schema), cached in this browser' : 'local SQLite snapshot';
+    const db_path = db && db.backend === 'supabase' ? 'Supabase (finance project), cached in this browser' : 'local SQLite snapshot';
     const db_size = H.one('SELECT (SELECT page_count FROM pragma_page_count()) * (SELECT page_size FROM pragma_page_size())');
     const stats = {
       transactions: H.one('SELECT COUNT(*) FROM transactions'),

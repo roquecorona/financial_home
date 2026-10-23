@@ -63,7 +63,7 @@
 
   // { member, email, display_name }
   Auth.whoami = async () => {
-    const { data, error } = await Auth.getClient().schema(CFG.schema || 'finance').rpc('whoami');
+    const { data, error } = await Auth.getClient().schema(CFG.schema || 'public').rpc('whoami');
     if (error) throw error;
     const r = Array.isArray(data) ? data[0] : data;
     return r || { member: false };
