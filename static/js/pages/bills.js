@@ -6,7 +6,7 @@ F.pages.bills = async (root, r, ctl) => {
   const pref = (k, def) => { try { return localStorage.getItem('fin.bills.' + k) ?? def; } catch { return def; } };
   const setPref = (k, v) => { try { localStorage.setItem('fin.bills.' + k, v); } catch { /* ignore */ } };
   let view = r.params.view || pref('view', 'list');
-  let order = pref('order', 'due');
+  let order = pref('order', 'group');
   let hidePaid = pref('hidePaid', '0') === '1';
   const d = await F.get('/api/bills', { month });
   if (!ctl.alive()) return;
@@ -52,7 +52,11 @@ F.pages.bills = async (root, r, ctl) => {
       return html`${late.length ? html`<section>${F.secHead(html`<span class="alert-text">Past due</span>`, { sub: `${late.length} · ${fmt.money(late.reduce((a, b) => a + (b.amount || 0), 0), { cents: false })}` })}<div class="list">${late.sort(byDue).map(billRow)}</div></section>` : ''}
         <section>${F.secHead(late.length ? 'Everything else' : 'By due date', { sub: `${rest.length} · ${fmt.money(rest.reduce((a, b) => a + (b.amount || 0), 0), { cents: false })}` })}<div class="list">${rest.sort(byDue).map(billRow)}</div></section>${foot}`;
     }
-    return html`${d.sections.map((s) => {
+    // categories in a fixed, sensible order (big fixed costs first); any other group follows
+    const ORDER = ['Housing', 'Utilities', 'Home services', 'Groceries', 'Car', 'Kids & activities', 'Health & insurance', 'Payment plans', 'Subscriptions', 'Other'];
+    const rank = (s) => { const i = ORDER.indexOf(s); return i < 0 ? ORDER.length - 0.5 : i; };
+    const sections = d.sections.slice().sort((a, b) => rank(a) - rank(b));
+    return html`${sections.map((s) => {
       const list = bills.filter((b) => b.section === s);
       const all = d.bills.filter((b) => b.section === s);
       if (!list.length) return '';
@@ -87,7 +91,7 @@ F.pages.bills = async (root, r, ctl) => {
       ${F.kpi('Still to pay', F.kpiMoney(t.remaining), overdueN ? html`<span class="alert-text">${overdueN} past due</span>` : 'None past due')}
       </section>
     ${t.suggested ? html`<div class="callout accent">${icon('link')}<div>${t.suggested} bill${t.suggested === 1 ? ' has' : 's have'} a matching bank payment (amount within 5% and the name matches).</div><button type="button" class="btn sm primary" data-accept-all>Mark all ${t.suggested} paid</button></div>` : ''}
-    ${view === 'list' ? html`<div class="paytools" role="toolbar" aria-label="List options"><div class="seg" role="group" aria-label="Order"><button type="button" data-order="due" aria-pressed="${String(order === 'due')}">By due date</button><button type="button" data-order="group" aria-pressed="${String(order === 'group')}">By group</button></div>
+    ${view === 'list' ? html`<div class="paytools" role="toolbar" aria-label="List options"><div class="seg" role="group" aria-label="Order"><button type="button" data-order="due" aria-pressed="${String(order === 'due')}">By due date</button><button type="button" data-order="group" aria-pressed="${String(order === 'group')}">By category</button></div>
       <label class="check small"><input type="checkbox" data-hide-paid ${hidePaid ? raw('checked') : ''}> Hide paid</label></div>` : ''}
     <div id="bills-body" class="stack">${view === 'calendar' ? calendar() : listView()}</div>`);
 
